@@ -4,7 +4,7 @@
 
 ## What this repo is
 
-The phone companion app (framework is an open decision Q-007; default Flutter). Scope: settings, ride history/reports, park-mode alarm notifications, profile selection. Talks to the vehicle over BLE/Wi-Fi via `moto-connectivity-node`, and to the `moto-server` API for historical data.
+The phone companion app, in **Flutter** (D-022). Starting point: the legacy `HondaCl250_Telemetry/mobile_app/flutter_app` (BLE client + decoder + dashboard), ported per D-023. Scope: settings, ride history/reports, park-mode alarm notifications, profile selection. Talks to the vehicle over BLE/Wi-Fi via `moto-connectivity-node`, and to the `moto-server` API for historical data.
 
 ## What this repo is NOT / rules
 
