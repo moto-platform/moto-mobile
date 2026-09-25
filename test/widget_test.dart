@@ -6,10 +6,10 @@
 // tree, read text, and verify that the values of widget properties are correct.
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:honda_telemetry_app/main.dart';
+import 'package:moto_mobile/main.dart';
 
 void main() {
-  testWidgets('Honda Telemetry app smoke test', (WidgetTester tester) async {
+  testWidgets('Dashboard smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
     await tester.pumpWidget(const HondaTelemetryApp());
 

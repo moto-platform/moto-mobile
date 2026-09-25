@@ -65,6 +65,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         actions: [
+          if (_isConnected && !_data.ecuPresent)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4),
+              child: Chip(
+                label: Text('ECU not found', style: TextStyle(fontSize: 11, color: Colors.white)),
+                backgroundColor: Color(0xFFFF2E4C),
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
           IconButton(
             icon: Icon(_isConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
                 color: _isConnected ? const Color(0xFF00E676) : Colors.grey),
@@ -96,11 +106,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text('TACHOMETER & SPEED', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      Text('${_data.rpm.toInt()} RPM', style: const TextStyle(color: Color(0xFF00F0FF), fontWeight: FontWeight.bold)),
+                      Text(_data.rpmValid ? '${_data.rpm.toInt()} RPM' : '-- RPM',
+                          style: const TextStyle(color: Color(0xFF00F0FF), fontWeight: FontWeight.bold)),
                     ],
                   ),
                   const SizedBox(height: 20),
-                  Text('${_data.speed}', style: const TextStyle(fontSize: 72, fontWeight: FontWeight.bold, color: Colors.white)),
+                  Text(_data.speedValid ? '${_data.speed}' : '--',
+                      style: const TextStyle(fontSize: 72, fontWeight: FontWeight.bold, color: Colors.white)),
                   const Text('KM/H', style: TextStyle(color: Color(0xFF00F0FF), fontWeight: FontWeight.bold, letterSpacing: 2)),
                 ],
               ),
@@ -121,12 +133,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text('LEAN DYNAMICS', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      Text('${_data.leanAngle.toStringAsFixed(1)}°', style: const TextStyle(color: Color(0xFF00F0FF), fontWeight: FontWeight.bold, fontSize: 18)),
+                      Text(_data.leanValid && _data.leanAngle != null ? '${_data.leanAngle!.toStringAsFixed(1)}°' : '--',
+                          style: const TextStyle(color: Color(0xFF00F0FF), fontWeight: FontWeight.bold, fontSize: 18)),
                     ],
                   ),
                   const SizedBox(height: 20),
                   Transform.rotate(
-                    angle: _data.leanAngle * 3.14159 / 180,
+                    angle: (_data.leanValid && _data.leanAngle != null) ? _data.leanAngle! * 3.14159 / 180 : 0,
                     child: const Icon(Icons.two_wheeler, size: 90, color: Color(0xFF00F0FF)),
                   ),
                   const SizedBox(height: 20),
@@ -135,13 +148,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     children: [
                       Column(
                         children: [
-                          Text('${_data.maxLeanLeft.toStringAsFixed(1)}°', style: const TextStyle(color: Color(0xFFFFB800), fontWeight: FontWeight.bold, fontSize: 18)),
+                          Text(_data.leanValid && _data.maxLeanLeft != null ? '${_data.maxLeanLeft!.toStringAsFixed(1)}°' : '--',
+                              style: const TextStyle(color: Color(0xFFFFB800), fontWeight: FontWeight.bold, fontSize: 18)),
                           const Text('MAX LEFT', style: TextStyle(color: Colors.grey, fontSize: 10)),
                         ],
                       ),
                       Column(
                         children: [
-                          Text('${_data.maxLeanRight.toStringAsFixed(1)}°', style: const TextStyle(color: Color(0xFFFFB800), fontWeight: FontWeight.bold, fontSize: 18)),
+                          Text(_data.leanValid && _data.maxLeanRight != null ? '${_data.maxLeanRight!.toStringAsFixed(1)}°' : '--',
+                              style: const TextStyle(color: Color(0xFFFFB800), fontWeight: FontWeight.bold, fontSize: 18)),
                           const Text('MAX RIGHT', style: TextStyle(color: Colors.grey, fontSize: 10)),
                         ],
                       ),
@@ -163,9 +178,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildMetricTile("Coolant", "${_data.coolantTemp} °C"),
-                  _buildMetricTile("Throttle", "${_data.throttlePos.toInt()} %"),
-                  _buildMetricTile("Battery", "${_data.batteryVolt.toStringAsFixed(1)} V"),
+                  _buildMetricTile("Coolant", _data.coolantTempValid ? "${_data.coolantTemp} °C" : "--"),
+                  _buildMetricTile("Throttle", _data.throttlePosValid ? "${_data.throttlePos.toInt()} %" : "--"),
+                  _buildMetricTile("Battery", _data.batteryVoltValid ? "${_data.batteryVolt.toStringAsFixed(1)} V" : "--"),
                 ],
               ),
             ),

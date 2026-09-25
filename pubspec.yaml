@@ -1,5 +1,5 @@
-name: honda_telemetry_app
-description: "Honda CL250 Motorcycle Telemetry Mobile Application"
+name: moto_mobile
+description: "moto-platform phone companion app (BLE telemetry client, ride history, settings)."
 publish_to: 'none'
 version: 1.0.0+1
 
