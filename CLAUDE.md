@@ -1,5 +1,7 @@
 # CLAUDE.md — moto-mobile
 
+@.claude/PLATFORM-RULES.md
+
 ## What this repo is
 
 The phone companion app (framework is an open decision Q-007; default Flutter). Scope: settings, ride history/reports, park-mode alarm notifications, profile selection. Talks to the vehicle over BLE/Wi-Fi via `moto-connectivity-node`, and to the `moto-server` API for historical data.
