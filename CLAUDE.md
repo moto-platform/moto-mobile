@@ -13,6 +13,14 @@ The phone companion app, in **Flutter** (D-022). Starting point: the legacy `Hon
 - Signal names come from `moto-vehicle-defs` (VSS paths), never hand-written.
 - This is the last repo to be set up during bring-up. Don't start development here before the earlier repos have settled.
 
+## Build
+
+```
+flutter pub get
+flutter analyze
+flutter test
+```
+
 ## Context
 
 ARCHITECTURE §5, §7 · `../moto-vehicle-defs/docs/hardware-architecture.md` §5b.4.
