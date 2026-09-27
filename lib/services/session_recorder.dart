@@ -210,6 +210,11 @@ class SessionRecorder extends ChangeNotifier {
 
     _logEvent('recording_started', 'session_id=$sessionId');
 
+    // Make sure the CSV headers (and the recording_started event) are
+    // actually on disk before start() returns, not just buffered -- callers
+    // may want to inspect the session directory right away.
+    await _flush();
+
     _flushTimer?.cancel();
     _flushTimer = Timer.periodic(const Duration(seconds: 1), (_) => _flush());
 
