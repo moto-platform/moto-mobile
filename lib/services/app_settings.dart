@@ -1,8 +1,10 @@
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// App-wide settings for talking to moto-server: where it is, how to
-/// authenticate, and whether uploads should wait for Wi-Fi. Persisted with
-/// shared_preferences so they survive app restarts.
+/// authenticate, and whether uploads should wait for Wi-Fi. The URL and the
+/// Wi-Fi switch live in shared_preferences; the API token lives in the
+/// platform keystore (see [SecretStore]).
 class AppSettings {
   const AppSettings({
     this.serverBaseUrl,
@@ -23,6 +25,11 @@ class AppSettings {
 
   bool get isServerConfigured => serverBaseUrl != null && serverBaseUrl!.trim().isNotEmpty;
 
+  /// True when the configured URL is plain `http://` to a host other than the
+  /// phone itself: the bearer token would cross the network unencrypted. Allowed
+  /// (a workshop laptop on the local Wi-Fi is the common case) but warned about.
+  bool get sendsTokenInCleartext => isCleartextRemoteUrl(serverBaseUrl);
+
   AppSettings copyWith({
     String? serverBaseUrl,
     String? apiToken,
@@ -35,9 +42,44 @@ class AppSettings {
       );
 }
 
-/// Reads and writes [AppSettings] from shared_preferences.
+/// True for an `http://` URL whose host is not the phone itself.
+bool isCleartextRemoteUrl(String? url) {
+  final uri = Uri.tryParse(url?.trim() ?? '');
+  if (uri == null || uri.scheme.toLowerCase() != 'http') return false;
+  const local = {'localhost', '127.0.0.1', '::1'};
+  return !local.contains(uri.host.toLowerCase());
+}
+
+/// Minimal key/value secret storage, injectable so tests do not need the
+/// platform keystore.
+abstract class SecretStore {
+  Future<String?> read(String key);
+  Future<void> write(String key, String value);
+  Future<void> delete(String key);
+}
+
+/// Android Keystore / iOS Keychain backed [SecretStore].
+class PlatformSecretStore implements SecretStore {
+  const PlatformSecretStore();
+
+  static const FlutterSecureStorage _storage = FlutterSecureStorage();
+
+  @override
+  Future<String?> read(String key) => _storage.read(key: key);
+
+  @override
+  Future<void> write(String key, String value) => _storage.write(key: key, value: value);
+
+  @override
+  Future<void> delete(String key) => _storage.delete(key: key);
+}
+
+/// Reads and writes [AppSettings]: URL and Wi-Fi switch in shared_preferences,
+/// the API token in a [SecretStore] (never in plain shared_preferences).
 class AppSettingsStore {
-  const AppSettingsStore();
+  const AppSettingsStore({this.secrets = const PlatformSecretStore()});
+
+  final SecretStore secrets;
 
   static const String _keyServerBaseUrl = 'settings.server_base_url';
   static const String _keyApiToken = 'settings.api_token';
@@ -46,7 +88,17 @@ class AppSettingsStore {
   Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
     final baseUrl = prefs.getString(_keyServerBaseUrl);
-    final token = prefs.getString(_keyApiToken);
+    var token = await secrets.read(_keyApiToken);
+    // Builds before the keystore move kept the token in shared_preferences:
+    // move it once, then remove the plain copy.
+    final legacyToken = prefs.getString(_keyApiToken);
+    if (legacyToken != null) {
+      if ((token == null || token.isEmpty) && legacyToken.isNotEmpty) {
+        await secrets.write(_keyApiToken, legacyToken);
+        token = legacyToken;
+      }
+      await prefs.remove(_keyApiToken);
+    }
     return AppSettings(
       serverBaseUrl: (baseUrl == null || baseUrl.isEmpty) ? null : baseUrl,
       apiToken: (token == null || token.isEmpty) ? null : token,
@@ -66,10 +118,11 @@ class AppSettingsStore {
     }
 
     if (token.isEmpty) {
-      await prefs.remove(_keyApiToken);
+      await secrets.delete(_keyApiToken);
     } else {
-      await prefs.setString(_keyApiToken, token);
+      await secrets.write(_keyApiToken, token);
     }
+    await prefs.remove(_keyApiToken); // never keep a plain copy
 
     await prefs.setBool(_keyUploadOnlyOnWifi, settings.uploadOnlyOnWifi);
   }

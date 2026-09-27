@@ -82,7 +82,8 @@ void main() {
         networkInfo: _FixedNetworkInfo(true),
       );
 
-      final status = await uploader.upload('20260927-120000-ab12', const AppSettings(serverBaseUrl: 'https://s', apiToken: 't'));
+      final status =
+          await uploader.upload('20260927-120000-ab12', const AppSettings(serverBaseUrl: 'https://s', apiToken: 't'));
       expect(status.state, SessionUploadState.uploaded);
       expect(status.uploadedAtUtc, isNotNull);
 
@@ -99,7 +100,8 @@ void main() {
         networkInfo: _FixedNetworkInfo(true),
       );
 
-      final status = await uploader.upload('20260927-120000-ab12', const AppSettings(serverBaseUrl: 'https://s', apiToken: 't'));
+      final status =
+          await uploader.upload('20260927-120000-ab12', const AppSettings(serverBaseUrl: 'https://s', apiToken: 't'));
       expect(status.state, SessionUploadState.failed);
       expect(status.reason, contains('content differs'));
     });
@@ -172,20 +174,56 @@ void main() {
     // shared_preferences needs its platform channel mocked; the widget test
     // binding used by flutter_test provides a working in-memory default for
     // it in recent versions, so a plain round-trip works here.
-    test('round-trips through shared_preferences, and empty strings become null', () async {
+    test('round-trips, keeps the token out of shared_preferences, empty strings become null', () async {
       SharedPreferences.setMockInitialValues({});
-      const store = AppSettingsStore();
+      final secrets = _MemorySecretStore();
+      final store = AppSettingsStore(secrets: secrets);
       await store.save(const AppSettings(serverBaseUrl: 'https://s', apiToken: 'tok', uploadOnlyOnWifi: false));
       final loaded = await store.load();
       expect(loaded.serverBaseUrl, 'https://s');
       expect(loaded.apiToken, 'tok');
       expect(loaded.uploadOnlyOnWifi, isFalse);
       expect(loaded.isServerConfigured, isTrue);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('settings.api_token'), isNull);
+      expect(secrets.values['settings.api_token'], 'tok');
 
       await store.save(const AppSettings());
       final cleared = await store.load();
       expect(cleared.serverBaseUrl, isNull);
       expect(cleared.isServerConfigured, isFalse);
+      expect(cleared.apiToken, isNull);
+    });
+
+    test('moves a token saved by an older build out of shared_preferences', () async {
+      SharedPreferences.setMockInitialValues({'settings.api_token': 'old'});
+      final secrets = _MemorySecretStore();
+      final loaded = await AppSettingsStore(secrets: secrets).load();
+      expect(loaded.apiToken, 'old');
+      expect(secrets.values['settings.api_token'], 'old');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('settings.api_token'), isNull);
+    });
+
+    test('flags plain http to a remote host only', () {
+      expect(isCleartextRemoteUrl('http://192.168.1.20:8000'), isTrue);
+      expect(isCleartextRemoteUrl('https://moto.example.com'), isFalse);
+      expect(isCleartextRemoteUrl('http://localhost:8000'), isFalse);
+      expect(isCleartextRemoteUrl(null), isFalse);
+      expect(const AppSettings(serverBaseUrl: 'http://10.0.0.5').sendsTokenInCleartext, isTrue);
     });
   });
+}
+
+class _MemorySecretStore implements SecretStore {
+  final Map<String, String> values = {};
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+
+  @override
+  Future<void> delete(String key) async => values.remove(key);
 }

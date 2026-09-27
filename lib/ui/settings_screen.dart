@@ -99,6 +99,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     }),
                   ),
                   const SizedBox(height: 16),
+                  if (isCleartextRemoteUrl(_baseUrlCtrl.text))
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        'Warning: http:// sends the API token and ride data unencrypted. Use it only '
+                        'on a trusted local network; use https:// for any server reachable from outside.',
+                        style: TextStyle(fontSize: 12, color: Colors.orange),
+                      ),
+                    ),
                   if (_baseUrlCtrl.text.trim().isEmpty)
                     const Padding(
                       padding: EdgeInsets.only(bottom: 12),
