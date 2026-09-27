@@ -2,16 +2,19 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/ble_service.dart';
 import '../models/telemetry_data.dart';
+import 'record_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  const DashboardScreen({super.key, required this.bleService});
+
+  final BleService bleService;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  final BleService _bleService = BleService();
+  BleService get _bleService => widget.bleService;
   bool _isConnected = false;
   TelemetryData _data = TelemetryData.initial();
 
@@ -65,6 +68,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.fiber_manual_record, color: Color(0xFFFF2E4C)),
+            tooltip: 'Record ride session',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => RecordScreen(bleService: _bleService)),
+              );
+            },
+          ),
           if (_isConnected && !_data.ecuPresent)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 4),

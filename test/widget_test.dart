@@ -11,7 +11,7 @@ import 'package:moto_mobile/main.dart';
 void main() {
   testWidgets('Dashboard smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const HondaTelemetryApp());
+    await tester.pumpWidget(HondaTelemetryApp());
 
     // Verify that our title is displayed.
     expect(find.text('CL250 Telemetry'), findsOneWidget);

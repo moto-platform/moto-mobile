@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
+import 'services/ble_service.dart';
 import 'ui/dashboard_screen.dart';
 
 void main() {
-  runApp(const HondaTelemetryApp());
+  runApp(HondaTelemetryApp());
 }
 
 class HondaTelemetryApp extends StatelessWidget {
-  const HondaTelemetryApp({super.key});
+  HondaTelemetryApp({super.key, BleService? bleService}) : bleService = bleService ?? BleService();
+
+  /// Single BLE connection shared by the dashboard and the ride recorder, so
+  /// recording captures the same live connection the dashboard shows.
+  final BleService bleService;
 
   @override
   Widget build(BuildContext context) {
@@ -20,7 +25,7 @@ class HondaTelemetryApp extends StatelessWidget {
           secondary: Color(0xFFFF2E4C),
         ),
       ),
-      home: const DashboardScreen(),
+      home: DashboardScreen(bleService: bleService),
     );
   }
 }
