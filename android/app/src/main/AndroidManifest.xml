@@ -14,6 +14,9 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
+    <!-- Keeps the screen on while a ride session is recording (wakelock_plus). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Feature Declarations -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 

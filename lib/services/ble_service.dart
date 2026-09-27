@@ -9,6 +9,11 @@ class BleService {
   static const String txCharUuidStr   = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
   static const String rxCharUuidStr   = "828919fe-e41c-40ee-b4c6-2c974c2d3345";
 
+  /// Advertised-name prefix of the vehicle's BLE server. Exposed so callers
+  /// (e.g. session metadata) can reference the same constant instead of
+  /// hand-copying the literal.
+  static const String targetDeviceNamePrefix = "Honda-CL250";
+
   BluetoothDevice? _targetDevice;
   BluetoothCharacteristic? _rxCharacteristic;
   StreamSubscription? _scanSubscription;
@@ -18,10 +23,25 @@ class BleService {
   final StreamController<TelemetryData> _telemetryStreamController = StreamController<TelemetryData>.broadcast();
   Stream<TelemetryData> get telemetryStream => _telemetryStreamController.stream;
 
+  /// Every raw BLE notification payload, before decoding. Used by the ride
+  /// session recorder to keep a re-decodable record (raw_hex) and to
+  /// classify decode errors independently of [telemetryStream].
+  final StreamController<Uint8List> _rawPacketStreamController = StreamController<Uint8List>.broadcast();
+  Stream<Uint8List> get rawPacketStream => _rawPacketStreamController.stream;
+
   final StreamController<bool> _connectionStateController = StreamController<bool>.broadcast();
   Stream<bool> get connectionStream => _connectionStateController.stream;
 
   bool _isConnecting = false;
+
+  /// Name of the currently connected device, if any and if known.
+  String? get connectedDeviceName {
+    final device = _targetDevice;
+    if (device == null) return null;
+    if (device.platformName.isNotEmpty) return device.platformName;
+    if (device.advName.isNotEmpty) return device.advName;
+    return null;
+  }
 
   Future<bool> _requestPermissions() async {
     Map<Permission, PermissionStatus> statuses = await [
@@ -50,7 +70,7 @@ class BleService {
       _scanSubscription = FlutterBluePlus.scanResults.listen((results) async {
         for (ScanResult r in results) {
           final devName = r.device.platformName.isNotEmpty ? r.device.platformName : r.device.advName;
-          if (devName.contains("Honda-CL250")) {
+          if (devName.contains(targetDeviceNamePrefix)) {
             await _scanSubscription?.cancel();
             _scanSubscription = null;
             await FlutterBluePlus.stopScan();
@@ -79,7 +99,9 @@ class BleService {
                     // Listen to notifications
                     _valueSubscription = characteristic.lastValueStream.listen((value) {
                       if (value.isNotEmpty) {
-                        final data = TelemetryData.fromBinaryBuffer(Uint8List.fromList(value));
+                        final bytes = Uint8List.fromList(value);
+                        _rawPacketStreamController.add(bytes);
+                        final data = TelemetryData.fromBinaryBuffer(bytes);
                         _telemetryStreamController.add(data);
                       }
                     }, onError: (err) {
