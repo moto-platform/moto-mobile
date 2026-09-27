@@ -1,4 +1,5 @@
-import 'telemetry_data.dart' show blePacketExpectedVersion;
+import 'imu_block.dart' as imu_block_schema;
+import 'telemetry_data.dart' show bleTelemetryV3Version;
 
 /// App version string. Keep in sync with the `version:` field in
 /// pubspec.yaml. Recorded in every session's meta.json so a CSV export can
@@ -51,6 +52,14 @@ class SessionMeta {
   /// Connected BLE device/firmware name, when known at recording start.
   final String? deviceName;
 
+  /// IMU block format version in use (schema `imuBlock.version`), or `null`
+  /// if this app build predates the IMU block.
+  final int? imuBlockVersion;
+
+  /// ATT MTU requested right after connecting (schema `gatt.mtu.requested`),
+  /// or `null` if this app build predates MTU negotiation.
+  final int? requestedMtu;
+
   const SessionMeta({
     required this.sessionId,
     required this.createdUtc,
@@ -67,8 +76,10 @@ class SessionMeta {
     this.routeType,
     this.note,
     this.appVersion = kAppVersion,
-    this.bleSchemaVersion = blePacketExpectedVersion,
+    this.bleSchemaVersion = bleTelemetryV3Version,
     this.deviceName,
+    this.imuBlockVersion = imu_block_schema.imuBlockVersion,
+    this.requestedMtu,
   });
 
   Map<String, dynamic> toJson() => {
@@ -89,6 +100,8 @@ class SessionMeta {
         'app_version': appVersion,
         'ble_schema_version': bleSchemaVersion,
         'device_name': deviceName,
+        'imu_block_version': imuBlockVersion,
+        'requested_mtu': requestedMtu,
       };
 
   factory SessionMeta.fromJson(Map<String, dynamic> json) => SessionMeta(
@@ -107,8 +120,10 @@ class SessionMeta {
         routeType: json['route_type'] as String?,
         note: json['note'] as String?,
         appVersion: json['app_version'] as String? ?? kAppVersion,
-        bleSchemaVersion: json['ble_schema_version'] as int? ?? blePacketExpectedVersion,
+        bleSchemaVersion: json['ble_schema_version'] as int? ?? bleTelemetryV3Version,
         deviceName: json['device_name'] as String?,
+        imuBlockVersion: json['imu_block_version'] as int?,
+        requestedMtu: json['requested_mtu'] as int?,
       );
 
   SessionMeta copyWith({
@@ -129,6 +144,8 @@ class SessionMeta {
     String? appVersion,
     int? bleSchemaVersion,
     String? deviceName,
+    int? imuBlockVersion,
+    int? requestedMtu,
   }) =>
       SessionMeta(
         sessionId: sessionId ?? this.sessionId,
@@ -148,5 +165,7 @@ class SessionMeta {
         appVersion: appVersion ?? this.appVersion,
         bleSchemaVersion: bleSchemaVersion ?? this.bleSchemaVersion,
         deviceName: deviceName ?? this.deviceName,
+        imuBlockVersion: imuBlockVersion ?? this.imuBlockVersion,
+        requestedMtu: requestedMtu ?? this.requestedMtu,
       );
 }
