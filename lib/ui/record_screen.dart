@@ -261,7 +261,7 @@ class _RecordScreenState extends State<RecordScreen> {
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.orange.withOpacity(0.15),
+              color: Colors.orange.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: Colors.orange),
             ),
@@ -331,7 +331,7 @@ class _RecordScreenState extends State<RecordScreen> {
           const SizedBox(width: 8),
           Expanded(
             child: DropdownButtonFormField<String>(
-              value: _weather,
+              initialValue: _weather,
               decoration: const InputDecoration(labelText: 'Weather'),
               items: _weatherOptions.map((w) => DropdownMenuItem(value: w, child: Text(w))).toList(),
               onChanged: (v) => setState(() => _weather = v ?? 'unknown'),
@@ -368,7 +368,7 @@ class _RecordScreenState extends State<RecordScreen> {
           decoration: const InputDecoration(labelText: 'Condition label (healthy or fault type)'),
         ),
         DropdownButtonFormField<String>(
-          value: _routeType,
+          initialValue: _routeType,
           decoration: const InputDecoration(labelText: 'Route type'),
           items: _routeTypeOptions.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
           onChanged: (v) => setState(() => _routeType = v),

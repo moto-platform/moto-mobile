@@ -116,7 +116,7 @@ void main() {
 
     final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
     expect(lines.length, 2); // header + 1 row
-    final header = SessionRecorder.telemetryCsvHeader;
+    const header = SessionRecorder.telemetryCsvHeader;
     final row = lines[1].split(',');
     final byName = {for (var i = 0; i < header.length; i++) header[i]: row[i]};
 
@@ -170,7 +170,7 @@ void main() {
 
       final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
       expect(lines.length, 2);
-      final header = SessionRecorder.telemetryCsvHeader;
+      const header = SessionRecorder.telemetryCsvHeader;
       final row = lines[1].split(',');
       final byName = {for (var i = 0; i < header.length; i++) header[i]: row[i]};
 
@@ -187,7 +187,7 @@ void main() {
       final summary = await recorder.stop();
 
       final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
-      final header = SessionRecorder.telemetryCsvHeader;
+      const header = SessionRecorder.telemetryCsvHeader;
       final row = lines[1].split(',');
       final byName = {for (var i = 0; i < header.length; i++) header[i]: row[i]};
 
