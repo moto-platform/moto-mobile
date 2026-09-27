@@ -8,9 +8,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/session_meta.dart';
+import '../services/app_settings.dart';
 import '../services/ble_service.dart';
 import '../services/session_recorder.dart';
 import '../services/session_store.dart';
+import '../services/session_upload.dart';
+import 'settings_screen.dart';
 
 const String _lastUsedMetaPrefsKey = 'session_recorder.last_used_meta';
 
@@ -31,13 +34,22 @@ class RecordScreen extends StatefulWidget {
 class _RecordScreenState extends State<RecordScreen> {
   late final SessionRecorder _recorder;
   late final SessionStore _store;
+  late final SessionUploader _uploader;
+  final AppSettingsStore _settingsStore = const AppSettingsStore();
 
   StreamSubscription<Uint8List>? _packetSub;
+  StreamSubscription<Uint8List>? _imuPacketSub;
+  StreamSubscription<int>? _mtuSub;
   StreamSubscription<bool>? _connSub;
   Timer? _tickTimer;
 
   bool _isConnected = false;
   List<SessionInfo> _sessions = [];
+  AppSettings _settings = const AppSettings();
+
+  /// Upload status per session id, refreshed on [_refreshSessions] and
+  /// updated live while an upload is in flight.
+  final Map<String, SessionUploadStatus> _uploadStatuses = {};
 
   final _riderNameCtrl = TextEditingController();
   final _riderWeightCtrl = TextEditingController();
@@ -57,9 +69,12 @@ class _RecordScreenState extends State<RecordScreen> {
     super.initState();
     _recorder = SessionRecorder();
     _store = SessionStore();
+    _uploader = SessionUploader(documentsDirProvider: _store.documentsDirProvider);
     _recorder.addListener(_onRecorderChanged);
 
     _packetSub = widget.bleService.rawPacketStream.listen(_recorder.handleRawPacket);
+    _imuPacketSub = widget.bleService.rawImuBlockStream.listen(_recorder.handleRawImuBlock);
+    _mtuSub = widget.bleService.mtuStream.listen(_recorder.handleMtuNegotiated);
     _connSub = widget.bleService.connectionStream.listen((connected) {
       _recorder.handleConnectionChange(connected);
       if (mounted) setState(() => _isConnected = connected);
@@ -71,12 +86,20 @@ class _RecordScreenState extends State<RecordScreen> {
     });
 
     _loadLastUsedMeta();
+    _loadSettings();
     _refreshSessions();
+  }
+
+  Future<void> _loadSettings() async {
+    final settings = await _settingsStore.load();
+    if (mounted) setState(() => _settings = settings);
   }
 
   @override
   void dispose() {
     _packetSub?.cancel();
+    _imuPacketSub?.cancel();
+    _mtuSub?.cancel();
     _connSub?.cancel();
     _tickTimer?.cancel();
     _recorder.removeListener(_onRecorderChanged);
@@ -166,6 +189,7 @@ class _RecordScreenState extends State<RecordScreen> {
       routeType: _routeType,
       note: _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
       deviceName: widget.bleService.connectedDeviceName,
+      requestedMtu: BleService.requestedMtu,
     );
   }
 
@@ -193,7 +217,37 @@ class _RecordScreenState extends State<RecordScreen> {
 
   Future<void> _refreshSessions() async {
     final sessions = await _store.listSessions();
-    if (mounted) setState(() => _sessions = sessions);
+    final statuses = <String, SessionUploadStatus>{};
+    for (final s in sessions) {
+      statuses[s.sessionId] = await _uploader.readStatus(s.sessionId);
+    }
+    if (mounted) {
+      setState(() {
+        _sessions = sessions;
+        _uploadStatuses
+          ..clear()
+          ..addAll(statuses);
+      });
+    }
+  }
+
+  Future<void> _uploadSession(String sessionId) async {
+    setState(() => _uploadStatuses[sessionId] = const SessionUploadStatus(state: SessionUploadState.uploading));
+    final status = await _uploader.upload(sessionId, _settings);
+    if (!mounted) return;
+    setState(() => _uploadStatuses[sessionId] = status);
+    if (status.state == SessionUploadState.failed) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Upload failed: ${status.reason ?? 'unknown error'}'),
+      ));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Upload complete.')));
+    }
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+    await _loadSettings();
   }
 
   Future<void> _shareSession(String sessionId) async {
@@ -233,6 +287,13 @@ class _RecordScreenState extends State<RecordScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Ride Recorder'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.settings),
+              tooltip: 'Settings',
+              onPressed: _openSettings,
+            ),
+          ],
           bottom: const TabBar(tabs: [
             Tab(text: 'Record'),
             Tab(text: 'Sessions'),
@@ -396,6 +457,27 @@ class _RecordScreenState extends State<RecordScreen> {
             Text('Packets: ${_recorder.packetCount}   Lost: ${_recorder.lostCount}   '
                 'Loss: ${_recorder.lossPercent.toStringAsFixed(1)}%'),
             Text('Decode errors: ${_recorder.decodeErrorCount}   Disconnects: ${_recorder.disconnectCount}'),
+            if (_recorder.imuBlockCount > 0 || _recorder.imuMissingSamples > 0)
+              Text('IMU samples: ${_recorder.imuSampleCount}   Missing: ${_recorder.imuMissingSamples}   '
+                  'MTU: ${_recorder.currentMtu ?? '-'}'),
+            if (_recorder.firmwareUpdateRecommended)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.orange),
+                  ),
+                  child: const Text(
+                    'Only version 2 telemetry packets received so far -- the connected '
+                    'device firmware may be outdated. Update it to get CAN health, ages '
+                    'and IMU data.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ),
             const SizedBox(height: 6),
             Row(
               children: [
@@ -419,6 +501,40 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
+  String _uploadStatusLabel(SessionUploadStatus status) {
+    switch (status.state) {
+      case SessionUploadState.notUploaded:
+        return _settings.isServerConfigured ? 'not uploaded' : 'not uploaded (no server configured)';
+      case SessionUploadState.uploading:
+        return 'uploading...';
+      case SessionUploadState.uploaded:
+        return 'uploaded${status.uploadedAtUtc != null ? ' (${status.uploadedAtUtc})' : ''}';
+      case SessionUploadState.failed:
+        return 'failed: ${status.reason ?? 'unknown error'}';
+    }
+  }
+
+  Widget _buildUploadButton(String sessionId, SessionUploadStatus status) {
+    if (status.state == SessionUploadState.uploading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 12),
+        child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+
+    // Recording and sharing must keep working with no server configured;
+    // the upload action itself is simply disabled with an explanatory hint.
+    final canUpload = _settings.isServerConfigured;
+    final isRetry = status.state == SessionUploadState.failed;
+    return IconButton(
+      icon: Icon(isRetry ? Icons.refresh : Icons.cloud_upload_outlined),
+      tooltip: !canUpload
+          ? 'Set a server URL in Settings to enable uploads'
+          : (isRetry ? 'Retry upload' : 'Upload to moto-server'),
+      onPressed: canUpload ? () => _uploadSession(sessionId) : null,
+    );
+  }
+
   Widget _buildSessionsTab() {
     if (_sessions.isEmpty) {
       return RefreshIndicator(
@@ -439,6 +555,7 @@ class _RecordScreenState extends State<RecordScreen> {
           final s = _sessions[index];
           final duration = s.duration;
           final loss = s.lossPercent;
+          final uploadStatus = _uploadStatuses[s.sessionId] ?? const SessionUploadStatus();
           return ListTile(
             title: Text(s.sessionId),
             isThreeLine: true,
@@ -446,11 +563,13 @@ class _RecordScreenState extends State<RecordScreen> {
               '${s.createdUtc?.toLocal().toString() ?? 'unknown time'}\n'
               'duration: ${duration == null ? '-' : _formatDuration(duration)}  '
               'packets: ${s.packetCount ?? '-'}  '
-              'loss: ${loss == null ? '-' : '${loss.toStringAsFixed(1)}%'}',
+              'loss: ${loss == null ? '-' : '${loss.toStringAsFixed(1)}%'}\n'
+              'upload: ${_uploadStatusLabel(uploadStatus)}',
             ),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                _buildUploadButton(s.sessionId, uploadStatus),
                 IconButton(
                   icon: const Icon(Icons.share),
                   tooltip: 'Share',

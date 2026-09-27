@@ -46,6 +46,11 @@ class SessionStore {
 
   final DocumentsDirProvider _documentsDirProvider;
 
+  /// Exposed so callers that need to share the exact same "documents
+  /// directory" resolution (e.g. [SessionUploader]) can, instead of
+  /// hand-picking a possibly-different provider.
+  DocumentsDirProvider get documentsDirProvider => _documentsDirProvider;
+
   Future<Directory> rootDir() => resolveSessionsRootDir(_documentsDirProvider);
 
   /// Lists all sessions on disk, newest first (session ids sort
@@ -95,11 +100,12 @@ class SessionStore {
   }
 
   /// The session's files that exist, in a sensible share order: meta.json,
-  /// telemetry.csv, events.csv, summary.json.
+  /// telemetry.csv, events.csv, summary.json, imu.csv. Deliberately excludes
+  /// `upload.json` -- that is app-local bookkeeping, not session data.
   Future<List<File>> shareableFiles(String sessionId) async {
     final root = await rootDir();
     final dir = Directory('${root.path}/$sessionId');
-    const candidates = ['meta.json', 'telemetry.csv', 'events.csv', 'summary.json'];
+    const candidates = ['meta.json', 'telemetry.csv', 'events.csv', 'summary.json', 'imu.csv'];
     final files = <File>[];
     for (final name in candidates) {
       final file = File('${dir.path}/$name');
