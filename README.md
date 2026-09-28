@@ -44,3 +44,7 @@ flutter pub get
 flutter analyze
 flutter test
 ```
+
+## License
+
+MIT, see `LICENSE` (D-036).

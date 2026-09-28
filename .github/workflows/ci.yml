@@ -18,21 +18,12 @@ jobs:
 
       - run: flutter pub get
 
-      # Schema drift: the fixture must equal moto-connectivity-node's
-      # docs/ble_telemetry_packet_schema.json (single source). That repo is private, so a
-      # token with Contents: read on moto-connectivity-node is needed (MOTO_CONN_READ_TOKEN).
-      # Without it the drift test is skipped and a warning is printed.
+      # moto-connectivity-node is public (D-033): the single-source schema is read
+      # without a token. A failed fetch fails the job instead of skipping the check.
       - name: Fetch BLE schema source (moto-connectivity-node)
-        env:
-          TOKEN: ${{ secrets.MOTO_CONN_READ_TOKEN }}
         run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::warning::MOTO_CONN_READ_TOKEN not available: BLE schema drift check skipped."
-            exit 0
-          fi
-          curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github.raw" \
-            -o "$RUNNER_TEMP/ble_schema.json" \
-            https://api.github.com/repos/moto-platform/moto-connectivity-node/contents/docs/ble_telemetry_packet_schema.json?ref=main
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/ble_schema.json" \
+            https://raw.githubusercontent.com/moto-platform/moto-connectivity-node/main/docs/ble_telemetry_packet_schema.json
           echo "MOTO_CONN_SCHEMA=$RUNNER_TEMP/ble_schema.json" >> "$GITHUB_ENV"
           echo "MOTO_SCHEMA_DRIFT_REQUIRED=1" >> "$GITHUB_ENV"
 
