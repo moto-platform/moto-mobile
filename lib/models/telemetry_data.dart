@@ -1,123 +1,57 @@
 import 'dart:typed_data';
 
-/// BLE telemetry packet format, single source of truth:
-/// moto-connectivity-node/docs/ble_telemetry_packet_schema.json.
-/// This model mirrors that schema; the same file is checked verbatim into
-/// test/fixtures/ble_telemetry_packet_schema.json and compared against the
-/// constants below by test/schema_drift_test.dart.
-///
-/// Implementations of this schema: src/BLETelemetryPacket.h (firmware,
-/// moto-connectivity-node) and this file (decoder, moto-mobile). Ported from
-/// HondaCl250_Telemetry@legacy-final (schema version 1) per D-023.
-///
-/// Version history (see the schema's `versioning.history`):
-///  - 1: legacy 15-byte layout (not implemented here, never seen on the wire).
-///  - 2: 16-byte layout (`lowMtuFallback` in the schema). Still sent by the
-///    firmware when the negotiated ATT MTU is too small for version 3, or by
-///    old firmware that only ever speaks version 2.
-///  - 3 (D-032, current): 37-byte layout at the top level of the schema.
-///    Adds `deviceTimeMs`, per-signal ages and CAN/tester health, and flags
-///    bit 7 (`imuActive`). The lean fields are deprecated (D-023) and always
-///    report "not available" on version 3.
-///
-/// Receivers dispatch on byte 0 (`version`) and decode with the matching
-/// layout; any other version, or a payload whose length does not match that
-/// version's `totalBytes`, is dropped.
-const int bleTelemetryV3Version = 3;
-const int bleTelemetryV3TotalBytes = 37;
-const int bleTelemetryV2Version = 2;
-const int bleTelemetryV2TotalBytes = 16;
+import 'package:moto_defs/moto_defs.dart';
 
-/// Deprecated aliases kept only so older call sites (and their compiled
-/// tests) do not silently start decoding v3 packets as v2. Prefer
-/// [bleTelemetryV2Version] / [bleTelemetryV2TotalBytes].
-const int blePacketExpectedVersion = bleTelemetryV3Version;
-const int blePacketSizeBytes = bleTelemetryV3TotalBytes;
+// BLE telemetry packet decoder. The packet layout (offsets, sizes, versions,
+// sentinels, flag bits, bus states, UUIDs) is NOT defined here: the single
+// source of truth is moto-vehicle-defs `ble/ble_schema.json` (D-061), taken
+// through the generated `moto_defs` Dart package (`BleTelemetry*`,
+// `BleTelemetryV2Offsets`, `BleTelemetryV3Offsets`, `BleTelemetryV4Offsets`,
+// `BleTelemetryFlagBits`, `BleCanFlagsBits`, `BleCanBusState`). A layout
+// change is a defs change plus a version bump; this file only decodes.
+//
+// Implementations of the schema: the generated C header (firmware,
+// moto-connectivity-node) and this file (decoder, moto-mobile). Ported from
+// HondaCl250_Telemetry@legacy-final (schema version 1) per D-023.
+//
+// Version history (see the schema's `versioning.history`):
+//  - 1: legacy 15-byte layout (not implemented here, never seen on the wire).
+//  - 2: 16-byte layout (low-MTU fallback). Still sent by the firmware when
+//    the negotiated ATT MTU is too small for the full layout, or by old
+//    firmware that only ever speaks version 2.
+//  - 3 (D-032): 37-byte layout. Adds `deviceTimeMs`, per-signal ages and
+//    CAN/tester health, and flags bit 7 (`imuActive`). The lean fields are
+//    deprecated (D-023) and always report "not available".
+//  - 4 (D-058, current): 57-byte layout = version 3 plus the tester step-gap
+//    fields and one rotating per-DID round-trip record (`testerStats` in the
+//    schema). TEMPORARY until rt-core's health DID 0xFD02 (D-055).
+//
+// Receivers dispatch on byte 0 (`version`) and decode with the matching
+// layout; a version outside [BleTelemetry.acceptedVersions], or a payload
+// whose length does not match that version's total size, is dropped.
 
-/// Sentinel value for an int16 field that is "not available" (0x8000). Used
-/// only by the deprecated lean fields.
-const int blePacketNotAvailable = -32768;
-
-/// Sentinel value for a uint16 `ageOf` field meaning "no value received
-/// since boot" (`age.neverReceived` in the schema). The maximum real age is
-/// `age.max` (65534); ages saturate there instead of wrapping.
-const int bleTelemetryAgeNeverReceived = 65535;
-const int bleTelemetryAgeMaxMs = 65534;
-
-/// Byte offsets of each field in the version 3 (37-byte) packet, named after
-/// the schema's `fields[].name` entries.
-class BleTelemetryV3Offsets {
-  static const int version = 0;
-  static const int seq = 1;
-  static const int deviceTimeMs = 2;
-  static const int rpm = 6;
-  static const int speed = 8;
-  static const int coolantTemp = 9;
-  static const int throttlePos = 10;
-  static const int batteryVolt = 11;
-  static const int leanAngle = 13;
-  static const int maxLeanRight = 15;
-  static const int maxLeanLeft = 17;
-  static const int flags = 19;
-  static const int rpmAgeMs = 20;
-  static const int speedAgeMs = 22;
-  static const int coolantTempAgeMs = 24;
-  static const int throttlePosAgeMs = 26;
-  static const int batteryVoltAgeMs = 28;
-  static const int canBusState = 30;
-  static const int canTxErrorCount = 31;
-  static const int canRxErrorCount = 32;
-  static const int canBusOffCount = 33;
-  static const int unansweredDidCount = 34;
-  static const int canFlags = 36;
+/// Telemetry packet version numbers, one per generated layout family
+/// (`BleTelemetryV2*`, `BleTelemetryV3*`, `BleTelemetryV4*`). The generated
+/// code has no per-version number constant (the number is part of the class
+/// name), so the decoder's dispatch is spelled out here; the tests pin these
+/// to [BleTelemetry.legacyVersion], [BleTelemetry.currentVersion] and
+/// [BleTelemetry.acceptedVersions] so a defs version bump fails loudly instead
+/// of silently decoding with the wrong layout.
+abstract final class TelemetryVersion {
+  static const int v2 = 2;
+  static const int v3 = 3;
+  static const int v4 = 4;
 }
 
-/// Byte offsets of each field in the version 2 (16-byte) `lowMtuFallback`
-/// packet, named after the schema's `lowMtuFallback.fields[].name` entries.
-class BleTelemetryV2Offsets {
-  static const int version = 0;
-  static const int seq = 1;
-  static const int rpm = 2;
-  static const int speed = 4;
-  static const int coolantTemp = 5;
-  static const int throttlePos = 6;
-  static const int batteryVolt = 7;
-  static const int leanAngle = 9;
-  static const int maxLeanRight = 11;
-  static const int maxLeanLeft = 13;
-  static const int flags = 15;
-}
-
-/// Deprecated alias: use [BleTelemetryV2Offsets] (or [BleTelemetryV3Offsets]
-/// for version-3-only fields) directly. Kept because `seq` and `version` sit
-/// at the same offset in both layouts, so old call sites that only peeked at
-/// those two fields still work unchanged.
-typedef BlePacketFieldOffsets = BleTelemetryV2Offsets;
-
-/// Bit positions within the `flags` byte, shared by version 2 and version 3
-/// (`flags.bits` in the schema). Version 2 packets always send 0 for bit 7.
-class BleTelemetryFlagBits {
-  static const int rpmValid = 0;
-  static const int speedValid = 1;
-  static const int coolantTempValid = 2;
-  static const int throttlePosValid = 3;
-  static const int batteryVoltValid = 4;
-  static const int leanValid = 5;
-  static const int ecuPresent = 6;
-  static const int imuActive = 7;
-}
-
-/// Deprecated alias: use [BleTelemetryFlagBits].
-typedef BlePacketFlagBits = BleTelemetryFlagBits;
-
-/// Vehicle-bus TWAI state (`canHealth.busState` in the schema). Only present
-/// on version 3 packets; `null` on version 2 (the field does not exist).
+/// Vehicle-bus TWAI state (`canHealth.busState` in the schema; values from
+/// the generated [BleCanBusState]). Only present on version 3 and 4 packets;
+/// `null` on version 2 (the field does not exist).
 enum CanBusState {
-  notInstalled(0),
-  running(1),
-  errorWarning(2),
-  busOff(3),
-  stopped(4);
+  notInstalled(BleCanBusState.notInstalled),
+  running(BleCanBusState.running),
+  errorWarning(BleCanBusState.errorWarning),
+  busOff(BleCanBusState.busOff),
+  stopped(BleCanBusState.stopped);
 
   const CanBusState(this.value);
   final int value;
@@ -134,20 +68,11 @@ enum CanBusState {
   }
 }
 
-/// Bit positions within the `canFlags` byte (`canHealth.canFlags` in the
-/// schema). Only present on version 3 packets.
-class CanFlagsBits {
-  static const int pollerEnabled = 0;
-  static const int latchedForeignTester = 1;
-  static const int latchedBusOff = 2;
-  static const int syntheticData = 3;
-}
-
 /// Telemetry model representing a decoded binary BLE packet from
-/// moto-connectivity-node, version 2 or version 3.
+/// moto-connectivity-node, version 2, 3 or 4.
 class TelemetryData {
   /// 0 for [TelemetryData.initial] (no packet decoded yet), otherwise
-  /// [bleTelemetryV2Version] or [bleTelemetryV3Version].
+  /// [TelemetryVersion.v2], [TelemetryVersion.v3] or [TelemetryVersion.v4].
   final int packetVersion;
 
   /// Node clock (ms) when the packet was built, see the schema's
@@ -161,9 +86,9 @@ class TelemetryData {
   final double batteryVolt;
 
   /// DEPRECATED (D-023): the complementary-filter lean estimate was dropped;
-  /// these three fields are always `null` on version 3 packets and are kept
-  /// only so the layout stays close to version 2. Do not use for analysis --
-  /// the eventual lean signal comes from the rt-core EKF instead.
+  /// these three fields are always `null` on version 3 and 4 packets and are
+  /// kept only so the layout stays close to version 2. Do not use for
+  /// analysis -- the eventual lean signal comes from the rt-core EKF instead.
   final double? leanAngle;
   final double? maxLeanRight;
   final double? maxLeanLeft;
@@ -184,7 +109,7 @@ class TelemetryData {
   /// Age (ms) since each signal was last written, at the time the packet was
   /// built (`age` in the schema). `null` on version 2 packets (no age
   /// fields) and `null` when the raw value is
-  /// [bleTelemetryAgeNeverReceived] (no value since boot).
+  /// [BleTelemetry.ageNeverReceived] (no value since boot).
   final int? rpmAgeMs;
   final int? speedAgeMs;
   final int? coolantTempAgeMs;
@@ -199,23 +124,45 @@ class TelemetryData {
   final int? canBusOffCount;
   final int? unansweredDidCount;
 
-  /// Raw `canFlags` byte; see [CanFlagsBits] for bit meanings, or use the
+  /// Raw `canFlags` byte; see [BleCanFlagsBits] for the bit masks, or use the
   /// `pollerEnabled` / `latchedForeignTester` / `latchedBusOff` /
   /// `syntheticData` getters below.
   final int? canFlags;
 
-  bool? get pollerEnabled => _canFlagBit(CanFlagsBits.pollerEnabled);
-  bool? get latchedForeignTester => _canFlagBit(CanFlagsBits.latchedForeignTester);
-  bool? get latchedBusOff => _canFlagBit(CanFlagsBits.latchedBusOff);
-  bool? get syntheticData => _canFlagBit(CanFlagsBits.syntheticData);
+  /// Tester statistics (`testerStats` in the schema, D-058), version 4 only;
+  /// all `null` on version 2 and 3. TEMPORARY until rt-core's health DID
+  /// 0xFD02 (D-055). Values are the raw wire values, sentinels included:
+  ///  - [stepGapMaxMs]: largest gap between two tester steps since boot (ms,
+  ///    saturates at 65535; 0 when the node has no tester).
+  ///  - [stepGapOverCount]: gaps above `client_step_max_ms` (saturating).
+  ///  - [rttDid]: DID of this packet's rotating round-trip record; 0 = no
+  ///    record, in which case the other `rtt*` fields carry no sample.
+  ///  - [rttMinMs]: smallest round trip of [rttDid]; 65535 = no sample yet.
+  ///  - [rttMaxMs]: largest round trip; 0 = no sample yet.
+  ///  - [rttSumMs] / [rttCount]: sum and count of samples (uint32, saturating;
+  ///    average = sum / count, invalid if either saturated).
+  ///  - [rttNrc78Count]: requests answered with NRC 0x78 (no sample).
+  final int? stepGapMaxMs;
+  final int? stepGapOverCount;
+  final int? rttDid;
+  final int? rttMinMs;
+  final int? rttMaxMs;
+  final int? rttSumMs;
+  final int? rttCount;
+  final int? rttNrc78Count;
 
-  bool? _canFlagBit(int position) {
+  bool? get pollerEnabled => _canFlagBit(BleCanFlagsBits.pollerEnabled);
+  bool? get latchedForeignTester => _canFlagBit(BleCanFlagsBits.latchedForeignTester);
+  bool? get latchedBusOff => _canFlagBit(BleCanFlagsBits.latchedBusOff);
+  bool? get syntheticData => _canFlagBit(BleCanFlagsBits.syntheticData);
+
+  bool? _canFlagBit(int mask) {
     final flags = canFlags;
     if (flags == null) return null;
-    return (flags & (1 << position)) != 0;
+    return (flags & mask) != 0;
   }
 
-  // Packet-loss measurement via the rolling `seq` field, shared by both
+  // Packet-loss measurement via the rolling `seq` field, shared by all
   // versions. Static because fromBinaryBuffer is a pure factory with no
   // persistent instance to hang this on.
   static int? _lastSeq;
@@ -266,6 +213,14 @@ class TelemetryData {
     this.canBusOffCount,
     this.unansweredDidCount,
     this.canFlags,
+    this.stepGapMaxMs,
+    this.stepGapOverCount,
+    this.rttDid,
+    this.rttMinMs,
+    this.rttMaxMs,
+    this.rttSumMs,
+    this.rttCount,
+    this.rttNrc78Count,
   });
 
   factory TelemetryData.initial() {
@@ -289,13 +244,29 @@ class TelemetryData {
     );
   }
 
+  /// Total packet size in bytes for [version] (from the generated
+  /// [BleTelemetry] totals), or `null` if this decoder has no layout for it.
+  static int? expectedLength(int version) {
+    switch (version) {
+      case TelemetryVersion.v2:
+        return BleTelemetry.totalBytesV2;
+      case TelemetryVersion.v3:
+        return BleTelemetry.totalBytesV3;
+      case TelemetryVersion.v4:
+        return BleTelemetry.totalBytesV4;
+      default:
+        return null;
+    }
+  }
+
   /// Parses one raw binary BLE telemetry notification. Wire format is
   /// LITTLE-ENDIAN throughout.
   ///
-  /// Dispatches on byte 0 (`version`): version 3 decodes as the 37-byte
-  /// layout, version 2 as the 16-byte `lowMtuFallback` layout. Any other
-  /// version, or a payload whose length does not match that version's
-  /// expected size, is dropped -- [TelemetryData.initial] is returned and
+  /// Dispatches on byte 0 (`version`): version 4 decodes as the 57-byte
+  /// layout, version 3 as the 37-byte layout and version 2 as the 16-byte
+  /// low-MTU layout. Any version outside [BleTelemetry.acceptedVersions], or a
+  /// payload whose length does not match that version's expected size, is
+  /// dropped -- [TelemetryData.initial] is returned and
   /// [versionRejectedCount] / [sizeRejectedCount] is incremented so callers
   /// can tell those apart.
   factory TelemetryData.fromBinaryBuffer(Uint8List bytes) {
@@ -303,22 +274,17 @@ class TelemetryData {
 
     try {
       final version = bytes[0];
-      if (version == bleTelemetryV3Version) {
-        if (bytes.length != bleTelemetryV3TotalBytes) {
-          sizeRejectedCount++;
-          return TelemetryData.initial();
-        }
-        return _decodeV3(bytes);
-      } else if (version == bleTelemetryV2Version) {
-        if (bytes.length != bleTelemetryV2TotalBytes) {
-          sizeRejectedCount++;
-          return TelemetryData.initial();
-        }
-        return _decodeV2(bytes);
-      } else {
+      final expected = expectedLength(version);
+      if (expected == null || !BleTelemetry.acceptedVersions.contains(version)) {
         versionRejectedCount++;
         return TelemetryData.initial();
       }
+      if (bytes.length != expected) {
+        sizeRejectedCount++;
+        return TelemetryData.initial();
+      }
+      if (version == TelemetryVersion.v2) return _decodeV2(bytes);
+      return _decodeV3OrV4(bytes, version);
     } catch (e) {
       return TelemetryData.initial();
     }
@@ -336,7 +302,17 @@ class TelemetryData {
     receivedCount++;
   }
 
-  static int? _decodeAge(int raw) => raw == bleTelemetryAgeNeverReceived ? null : raw;
+  static int? _decodeAge(int raw) => raw == BleTelemetry.ageNeverReceived ? null : raw;
+
+  // Battery voltage: raw millivolts -> volts. Schema `fields[batteryVolt].scale`
+  // (and `lowMtuFallback.fields[batteryVolt].scale`) is 0.001; the generated
+  // Dart has no scale constant, so the literal stays here.
+  static double _batteryVoltFromRaw(int rawMv) => rawMv / 1000.0;
+
+  // Deprecated lean fields (D-023): raw tenths of a degree, `notAvailable`
+  // (BleTelemetry.notAvailableInt16) -> null. The schema carries no scale for
+  // these deprecated fields; the 1/10 is the legacy tenths convention.
+  static double? _leanFromRaw(int raw) => raw == BleTelemetry.notAvailableInt16 ? null : raw / 10.0;
 
   static TelemetryData _decodeV2(Uint8List bytes) {
     final buffer = ByteData.sublistView(bytes);
@@ -346,25 +322,25 @@ class TelemetryData {
     final speed = buffer.getUint8(BleTelemetryV2Offsets.speed);
     final coolantTemp = buffer.getInt8(BleTelemetryV2Offsets.coolantTemp);
     final throttlePos = buffer.getUint8(BleTelemetryV2Offsets.throttlePos).toDouble();
-    final batteryVolt = buffer.getUint16(BleTelemetryV2Offsets.batteryVolt, Endian.little) / 1000.0;
+    final batteryVolt = _batteryVoltFromRaw(buffer.getUint16(BleTelemetryV2Offsets.batteryVolt, Endian.little));
 
     final leanAngleRaw = buffer.getInt16(BleTelemetryV2Offsets.leanAngle, Endian.little);
     final maxLeanRightRaw = buffer.getInt16(BleTelemetryV2Offsets.maxLeanRight, Endian.little);
     final maxLeanLeftRaw = buffer.getInt16(BleTelemetryV2Offsets.maxLeanLeft, Endian.little);
 
     final flags = buffer.getUint8(BleTelemetryV2Offsets.flags);
-    bool bit(int position) => (flags & (1 << position)) != 0;
+    bool bit(int mask) => (flags & mask) != 0;
 
     return TelemetryData(
-      packetVersion: bleTelemetryV2Version,
+      packetVersion: TelemetryVersion.v2,
       rpm: rpm,
       speed: speed,
       coolantTemp: coolantTemp,
       throttlePos: throttlePos,
       batteryVolt: batteryVolt,
-      leanAngle: leanAngleRaw == blePacketNotAvailable ? null : leanAngleRaw / 10.0,
-      maxLeanRight: maxLeanRightRaw == blePacketNotAvailable ? null : maxLeanRightRaw / 10.0,
-      maxLeanLeft: maxLeanLeftRaw == blePacketNotAvailable ? null : maxLeanLeftRaw / 10.0,
+      leanAngle: _leanFromRaw(leanAngleRaw),
+      maxLeanRight: _leanFromRaw(maxLeanRightRaw),
+      maxLeanLeft: _leanFromRaw(maxLeanLeftRaw),
       rpmValid: bit(BleTelemetryFlagBits.rpmValid),
       speedValid: bit(BleTelemetryFlagBits.speedValid),
       coolantTempValid: bit(BleTelemetryFlagBits.coolantTempValid),
@@ -376,7 +352,12 @@ class TelemetryData {
     );
   }
 
-  static TelemetryData _decodeV3(Uint8List bytes) {
+  /// Decodes the version 3 layout and, when [version] is
+  /// [TelemetryVersion.v4], the eight tester-stats fields appended after it.
+  /// The version 4 layout starts with the version 3 layout unchanged (same
+  /// offsets, enforced by a test), so the shared fields are read through
+  /// [BleTelemetryV3Offsets] for both.
+  static TelemetryData _decodeV3OrV4(Uint8List bytes, int version) {
     final buffer = ByteData.sublistView(bytes);
     _trackSeq(buffer.getUint8(BleTelemetryV3Offsets.seq));
 
@@ -385,9 +366,9 @@ class TelemetryData {
     final speed = buffer.getUint8(BleTelemetryV3Offsets.speed);
     final coolantTemp = buffer.getInt8(BleTelemetryV3Offsets.coolantTemp);
     final throttlePos = buffer.getUint8(BleTelemetryV3Offsets.throttlePos).toDouble();
-    final batteryVolt = buffer.getUint16(BleTelemetryV3Offsets.batteryVolt, Endian.little) / 1000.0;
+    final batteryVolt = _batteryVoltFromRaw(buffer.getUint16(BleTelemetryV3Offsets.batteryVolt, Endian.little));
 
-    // Deprecated (D-023): always notAvailable on version 3, decoded
+    // Deprecated (D-023): always notAvailable on version 3 and 4, decoded
     // generically anyway so a future change in the firmware is not silently
     // hidden here.
     final leanAngleRaw = buffer.getInt16(BleTelemetryV3Offsets.leanAngle, Endian.little);
@@ -395,21 +376,25 @@ class TelemetryData {
     final maxLeanLeftRaw = buffer.getInt16(BleTelemetryV3Offsets.maxLeanLeft, Endian.little);
 
     final flags = buffer.getUint8(BleTelemetryV3Offsets.flags);
-    bool bit(int position) => (flags & (1 << position)) != 0;
+    bool bit(int mask) => (flags & mask) != 0;
 
     final canBusStateRaw = buffer.getUint8(BleTelemetryV3Offsets.canBusState);
 
+    final isV4 = version == TelemetryVersion.v4;
+    int? v4U16(int offset) => isV4 ? buffer.getUint16(offset, Endian.little) : null;
+    int? v4U32(int offset) => isV4 ? buffer.getUint32(offset, Endian.little) : null;
+
     return TelemetryData(
-      packetVersion: bleTelemetryV3Version,
+      packetVersion: version,
       deviceTimeMs: deviceTimeMs,
       rpm: rpm,
       speed: speed,
       coolantTemp: coolantTemp,
       throttlePos: throttlePos,
       batteryVolt: batteryVolt,
-      leanAngle: leanAngleRaw == blePacketNotAvailable ? null : leanAngleRaw / 10.0,
-      maxLeanRight: maxLeanRightRaw == blePacketNotAvailable ? null : maxLeanRightRaw / 10.0,
-      maxLeanLeft: maxLeanLeftRaw == blePacketNotAvailable ? null : maxLeanLeftRaw / 10.0,
+      leanAngle: _leanFromRaw(leanAngleRaw),
+      maxLeanRight: _leanFromRaw(maxLeanRightRaw),
+      maxLeanLeft: _leanFromRaw(maxLeanLeftRaw),
       rpmValid: bit(BleTelemetryFlagBits.rpmValid),
       speedValid: bit(BleTelemetryFlagBits.speedValid),
       coolantTempValid: bit(BleTelemetryFlagBits.coolantTempValid),
@@ -429,6 +414,14 @@ class TelemetryData {
       canBusOffCount: buffer.getUint8(BleTelemetryV3Offsets.canBusOffCount),
       unansweredDidCount: buffer.getUint16(BleTelemetryV3Offsets.unansweredDidCount, Endian.little),
       canFlags: buffer.getUint8(BleTelemetryV3Offsets.canFlags),
+      stepGapMaxMs: v4U16(BleTelemetryV4Offsets.stepGapMaxMs),
+      stepGapOverCount: v4U16(BleTelemetryV4Offsets.stepGapOverCount),
+      rttDid: v4U16(BleTelemetryV4Offsets.rttDid),
+      rttMinMs: v4U16(BleTelemetryV4Offsets.rttMinMs),
+      rttMaxMs: v4U16(BleTelemetryV4Offsets.rttMaxMs),
+      rttSumMs: v4U32(BleTelemetryV4Offsets.rttSumMs),
+      rttCount: v4U32(BleTelemetryV4Offsets.rttCount),
+      rttNrc78Count: v4U16(BleTelemetryV4Offsets.rttNrc78Count),
     );
   }
 }

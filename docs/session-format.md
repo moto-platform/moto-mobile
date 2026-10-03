@@ -7,12 +7,15 @@ archive (`lib/services/session_upload.dart`) contains. moto-server is built
 against the same contract independently -- if you change anything here,
 change it on both sides together.
 
-The BLE packet layouts referenced throughout (telemetry versions 2 and 3,
-and the IMU block) have exactly one source of truth:
-`moto-connectivity-node/docs/ble_telemetry_packet_schema.json`. This repo
-keeps a byte-identical copy at `test/fixtures/ble_telemetry_packet_schema.json`
-and `test/schema_drift_test.dart` fails if it drifts. Never hand-invent a
-field name, offset or scale here -- copy it from that schema.
+The BLE packet layouts referenced throughout (telemetry versions 2, 3 and 4,
+and the IMU block) have exactly one source of truth: `ble/ble_schema.json` in
+`moto-vehicle-defs` (D-061). This repo takes it through the
+`external/moto-vehicle-defs` submodule and the generated Dart package
+`moto_defs` (`package:moto_defs/moto_defs.dart`, a path dependency); there is
+no copy of the schema and no drift test here. Never hand-invent a field name,
+offset or scale -- it comes from the schema (its `testerStats` section
+explains the version 4 fields), and a layout change is a defs change plus a
+version bump.
 
 `session_id` format: `YYYYMMDD-HHMMSS-xxxx` (UTC, 4 lowercase hex digits),
 stamped by `SessionRecorder.start()`.
@@ -24,13 +27,16 @@ since the version-2-only app): `session_id`, `created_utc`, `rider_name`,
 `rider_weight_kg`, `extra_load_kg`, `ambient_temp_c`, `weather`,
 `tire_pressure_front_bar`, `tire_pressure_rear_bar`, `fuel_level`,
 `vehicle_config`, `condition_label`, `route_type`, `note`, `app_version`,
-`ble_schema_version` (int; this app always writes `3`), `device_name`.
+`ble_schema_version` (int; this app writes `4`, the schema's current
+telemetry version -- sessions recorded by the earlier app carry `3`),
+`device_name`.
 
 New keys (D-032):
 - `imu_block_version` (int, `1`) -- the IMU block schema version this app
   decodes.
 - `requested_mtu` (int, `185`) -- the ATT MTU this app requests right after
-  connecting (`BleService.requestedMtu`), regardless of what was actually
+  connecting (the schema's `gatt.mtu.requested`, generated as
+  `BleGatt.requestedMtu`), regardless of what was actually
   negotiated (that lives in `summary.json`'s `mtu`).
 
 ## telemetry.csv
@@ -45,27 +51,63 @@ speed_valid,coolant_valid,tps_valid,battery_valid,lean_valid,ecu_present,
 decode_error
 ```
 
-This app appends 14 more (35 columns total):
+The version-3 app appended 14 more (35 columns):
 ```
 packet_version,device_time_ms,rpm_age_ms,speed_age_ms,coolant_age_ms,
 tps_age_ms,battery_age_ms,imu_active,can_bus_state,can_tec,can_rec,
 can_bus_off_count,unanswered_did_count,can_flags
 ```
 
+Telemetry version 4 (D-058) adds 8 more at the end (43 columns total), the
+tester statistics of the schema's `testerStats` section:
+```
+step_gap_max_ms,step_gap_over_count,rtt_did,rtt_min_ms,rtt_max_ms,
+rtt_sum_ms,rtt_count,rtt_nrc78_count
+```
+
 Notes:
 - `raw_hex` is lowercase hex of the *entire* notification payload (16 bytes
-  for version 2, 37 for version 3) and is authoritative: moto-server
+  for version 2, 37 for version 3, 57 for version 4) and is authoritative: moto-server
   re-decodes it from the schema and only uses this app's decoded columns as
   a consistency check.
 - A row whose packet decoded as version 2 (old firmware, or the negotiated
-  MTU was too small for version 3) has `packet_version=2` and all 14
-  appended columns empty -- there is no v3 data to report.
+  MTU was too small for version 3) has `packet_version=2` and all 22
+  appended columns (14 version-3 plus 8 version-4) empty -- there is no
+  version 3 or 4 data to report. A version 3 row (`packet_version=3`, old
+  firmware or an old recording) fills the 14 version-3 columns and leaves the
+  8 version-4 columns empty. A version 4 row fills all 22.
 - A row that failed to decode at all (`decode_error` non-empty: unrecognized
   version, or the wrong length for the version it claims) has every decoded
   column empty, including `packet_version`.
-- The three `lean_*` columns are DEPRECATED (D-023): a version-3 packet
+- The three `lean_*` columns are DEPRECATED (D-023): a version 3 or 4 packet
   always reports them as unavailable, so they are always empty for
-  `packet_version=3` rows. Do not use them for analysis.
+  `packet_version=3` and `4` rows. Do not use them for analysis.
+- The eight version-4 columns are measurements of the vehicle-bus tester (not
+  vehicle signals) and are TEMPORARY: rt-core's health DID 0xFD02 (D-055)
+  replaces them once rt-core is the tester. They hold the raw wire values,
+  sentinels included, so the contract has no "null" encoding of its own:
+  - `step_gap_max_ms`: largest gap since boot between two tester steps (ms,
+    rounded up, saturates at 65535; `0` when the node has no tester).
+  - `step_gap_over_count`: number of those gaps above `client_step_max_ms`
+    (saturating at 65535).
+  - `rtt_did`: DID of this packet's rotating round-trip record (the node
+    cycles through its DID table, one DID per packet); `0` means this packet
+    has no record, and the other `rtt_*` columns then carry no sample.
+  - `rtt_min_ms`: smallest round trip of `rtt_did` since boot, in ms
+    (`65535` = no sample yet).
+  - `rtt_max_ms`: largest round trip of `rtt_did` since boot, in ms (`0` = no
+    sample yet).
+  - `rtt_sum_ms` / `rtt_count`: sum of the round trips and number of samples
+    (uint32, saturating at 4294967295). Average = `rtt_sum_ms / rtt_count`,
+    invalid if either saturated.
+  - `rtt_nrc78_count`: requests of `rtt_did` answered with NRC 0x78
+    (responsePending); they give no round-trip sample (saturating at 65535).
+  A round trip is the time from the request's send to the tester step that
+  drains its answer, so it includes one step and loop latency (see the
+  schema's `testerStats.roundTrip`).
+- **moto-server must accept the same 43 columns** (the 8 new ones are empty
+  for version 2 and 3 rows). This is part of the contract shared with
+  moto-server; change it on both sides together.
 - `can_bus_state` and `can_flags` are the raw integers from the schema's
   `canHealth.busState` / `canHealth.canFlags`, not names.
 - Booleans are `1`/`0`; every other unavailable value (including an age
@@ -112,7 +154,7 @@ Existing events: `recording_started`, `decode_error`, `packet_gap`,
 New events (D-032):
 - `mtu_negotiated` -- `detail=mtu=<n>`, whenever `BleService` reports a new
   negotiated ATT MTU.
-- `packet_version` -- `detail=version=<2|3>`, whenever the telemetry
+- `packet_version` -- `detail=version=<2|3|4>`, whenever the telemetry
   packet's version differs from the previous packet (the first packet
   always logs one).
 - `firmware_update_recommended` -- `detail=only v2 packets received`, at
@@ -122,7 +164,7 @@ New events (D-032):
   in the Record screen as `SessionRecorder.firmwareUpdateRecommended`.
 - `can_health` -- `detail=state=<name>;tec=<n>;rec=<n>;bus_off=<n>;flags=<n>`,
   whenever `can_bus_state`, `can_flags` or `can_bus_off_count` changes (the
-  first version-3 packet always logs one).
+  first version 3 or 4 packet always logs one).
 - `did_unanswered` -- `detail=count=<n>;delta=<d>`, whenever
   `unanswered_did_count` increases.
 - `imu_gap` -- `detail=missing=<n>;sample_index=<i>`, whenever an IMU block's
@@ -138,7 +180,7 @@ Existing keys: `duration_ms`, `packet_count`, `lost_count`, `loss_percent`,
 
 New keys (D-032):
 - `packet_versions` -- object keyed by version as a string, e.g.
-  `{"2": 3, "3": 1200}`.
+  `{"2": 3, "4": 1200}`.
 - `imu_block_count`, `imu_sample_count`, `imu_missing_samples`,
   `imu_loss_percent` -- IMU totals for the whole session (0 / `0.0` when no
   IMU data ever arrived).

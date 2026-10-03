@@ -392,6 +392,13 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.0.6"
+  moto_defs:
+    dependency: "direct main"
+    description:
+      path: "external/moto-vehicle-defs/gen/dart/moto_defs"
+      relative: true
+    source: path
+    version: "0.0.0"
   nm:
     dependency: transitive
     description:

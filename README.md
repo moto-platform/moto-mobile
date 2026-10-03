@@ -14,18 +14,27 @@ connected.
 Ported from `HondaCl250_Telemetry@legacy-final` (`mobile_app/flutter_app`)
 per decision D-023. The web PWA and the complementary-filter lean angle
 estimate were dropped; the BLE client, packet decoder and dashboard were
-carried over and updated for the BLE telemetry packet schema (now version 3,
-D-032, with version 2 kept as the low-MTU fallback).
+carried over and updated for the BLE telemetry packet schema (now version 4,
+D-058, with version 3 still decoded and version 2 kept as the low-MTU
+fallback).
 
 ## BLE telemetry packet schema
 
 The BLE notification formats decoded by `lib/models/telemetry_data.dart`
-(telemetry, versions 2 and 3) and `lib/models/imu_block.dart` (the IMU
-sample block) are defined in
-`moto-connectivity-node/docs/ble_telemetry_packet_schema.json`. A verbatim
-copy is checked into `test/fixtures/ble_telemetry_packet_schema.json` and
-cross-checked against the decoders by `test/telemetry_data_test.dart`,
-`test/imu_block_test.dart` and `test/schema_drift_test.dart`.
+(telemetry, versions 2, 3 and 4) and `lib/models/imu_block.dart` (the IMU
+sample block), plus the GATT UUIDs and MTU, are defined once, in
+`moto-vehicle-defs` `ble/ble_schema.json` (D-061). This repo does not copy it:
+the `external/moto-vehicle-defs` submodule provides the generated Dart path
+package `moto_defs` (`external/moto-vehicle-defs/gen/dart/moto_defs`,
+`import 'package:moto_defs/moto_defs.dart'`), and the decoders only read its
+constants. After cloning, fetch the submodule first:
+
+```
+git submodule update --init
+```
+
+The tests build packets byte by byte from the generated offsets; a layout
+change is a defs change plus a version bump, never a hand edit here.
 
 ## Ride session files and moto-server upload
 
@@ -40,6 +49,7 @@ blocks recording or sharing.
 ## Commands
 
 ```
+git submodule update --init   # moto-vehicle-defs, needed by the moto_defs path package
 flutter pub get
 flutter analyze
 flutter test

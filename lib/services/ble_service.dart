@@ -4,21 +4,18 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:moto_defs/moto_defs.dart';
 import '../models/telemetry_data.dart';
 
+/// BLE client. GATT UUIDs and the requested ATT MTU come from the generated
+/// [BleGatt] (moto-vehicle-defs `ble/ble_schema.json`, D-061); nothing about
+/// the GATT layout is hand-written here.
 class BleService {
-  static const String serviceUuidStr = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-  static const String txCharUuidStr   = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-  static const String imuCharUuidStr  = "f62bc083-e25d-46b3-aa0b-2e9e6bc8f1e5";
-  static const String rxCharUuidStr   = "828919fe-e41c-40ee-b4c6-2c974c2d3345";
-
   /// Advertised-name prefix of the vehicle's BLE server. Exposed so callers
   /// (e.g. session metadata) can reference the same constant instead of
-  /// hand-copying the literal.
+  /// hand-copying the literal. Not part of the BLE schema (a scan filter, not
+  /// a layout fact).
   static const String targetDeviceNamePrefix = "Honda-CL250";
-
-  /// ATT MTU requested right after connecting, per schema `gatt.mtu.requested`.
-  static const int requestedMtu = 185;
 
   BluetoothDevice? _targetDevice;
   BluetoothCharacteristic? _rxCharacteristic;
@@ -125,13 +122,13 @@ class BleService {
             });
 
             // Android only: request a larger MTU so the firmware can send
-            // the version 3 (37-byte) telemetry layout and full-size IMU
-            // blocks instead of falling back to version 2 / suspending IMU
-            // notifications (schema `gatt.mtu.rule`). iOS negotiates its own
-            // MTU and has no equivalent API, so this is a no-op there.
+            // the full-size telemetry layout (version 3 or 4) and full-size
+            // IMU blocks instead of falling back to version 2 / suspending
+            // IMU notifications (schema `gatt.mtu.rule`). iOS negotiates its
+            // own MTU and has no equivalent API, so this is a no-op there.
             if (!kIsWeb && Platform.isAndroid) {
               try {
-                await _targetDevice!.requestMtu(requestedMtu);
+                await _targetDevice!.requestMtu(BleGatt.requestedMtu);
               } catch (e) {
                 debugPrint("BLE requestMtu error: $e");
               }
@@ -139,9 +136,9 @@ class BleService {
 
             List<BluetoothService> services = await _targetDevice!.discoverServices();
             for (var service in services) {
-              if (service.uuid.toString().toLowerCase() == serviceUuidStr.toLowerCase()) {
+              if (service.uuid.toString().toLowerCase() == BleGatt.serviceUuid.toLowerCase()) {
                 for (var characteristic in service.characteristics) {
-                  if (characteristic.uuid.toString().toLowerCase() == txCharUuidStr.toLowerCase()) {
+                  if (characteristic.uuid.toString().toLowerCase() == BleGatt.telemetryCharacteristicUuid.toLowerCase()) {
                     await _valueSubscription?.cancel();
 
                     // Listen to notifications
@@ -158,7 +155,7 @@ class BleService {
 
                     await characteristic.setNotifyValue(true);
                   }
-                  if (characteristic.uuid.toString().toLowerCase() == imuCharUuidStr.toLowerCase()) {
+                  if (characteristic.uuid.toString().toLowerCase() == BleGatt.imuCharacteristicUuid.toLowerCase()) {
                     // Old firmware does not expose this characteristic at
                     // all; it simply never appears in this loop, and
                     // rawImuBlockStream then just never emits.
@@ -174,7 +171,7 @@ class BleService {
 
                     await characteristic.setNotifyValue(true);
                   }
-                  if (characteristic.uuid.toString().toLowerCase() == rxCharUuidStr.toLowerCase()) {
+                  if (characteristic.uuid.toString().toLowerCase() == BleGatt.telematicsRxCharacteristicUuid.toLowerCase()) {
                     _rxCharacteristic = characteristic;
                   }
                 }
