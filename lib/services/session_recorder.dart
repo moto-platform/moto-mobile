@@ -411,7 +411,7 @@ class SessionRecorder extends ChangeNotifier {
       rawVersion = bytes[0];
       final expectedLength = TelemetryData.expectedLength(rawVersion);
       if (expectedLength == null || !BleTelemetry.acceptedVersions.contains(rawVersion)) {
-        decodeError = 'version mismatch: got $rawVersion (expected one of ${BleTelemetry.acceptedVersions.join(', ')})';
+        decodeError = 'version mismatch: got $rawVersion (expected one of ${BleTelemetry.acceptedVersions.join('/')})';
       } else if (bytes.length != expectedLength) {
         decodeError = 'size mismatch: got ${bytes.length} bytes (expected $expectedLength for version $rawVersion)';
       }
