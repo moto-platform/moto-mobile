@@ -20,6 +20,8 @@ dependencies:
   archive: ^3.6.1
   connectivity_plus: ^6.0.5
   flutter_secure_storage: ^10.3.4
+  moto_defs:
+    path: external/moto-vehicle-defs/gen/dart/moto_defs
 
 dev_dependencies:
   flutter_test:

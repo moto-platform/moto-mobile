@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:moto_defs/moto_defs.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/imu_block.dart';
@@ -147,7 +148,7 @@ class SessionRecorder extends ChangeNotifier {
     'lean_valid',
     'ecu_present',
     'decode_error',
-    // Version-3-only columns appended at the end (contract §telemetry.csv):
+    // Version-3-and-later columns appended at the end (contract §telemetry.csv):
     // blank whenever the decoded packet is version 2 or failed to decode.
     'packet_version',
     'device_time_ms',
@@ -163,6 +164,16 @@ class SessionRecorder extends ChangeNotifier {
     'can_bus_off_count',
     'unanswered_did_count',
     'can_flags',
+    // Version-4-only columns (D-058 tester stats, schema `testerStats`):
+    // blank for version 2 and 3 rows and for rows that failed to decode.
+    'step_gap_max_ms',
+    'step_gap_over_count',
+    'rtt_did',
+    'rtt_min_ms',
+    'rtt_max_ms',
+    'rtt_sum_ms',
+    'rtt_count',
+    'rtt_nrc78_count',
   ];
 
   static const List<String> eventsCsvHeader = [
@@ -198,9 +209,19 @@ class SessionRecorder extends ChangeNotifier {
   /// `firmware_update_recommended` heuristic (contract §events.csv).
   static const int _firmwareCheckPacketWindow = 20;
 
+  /// ATT notification header (opcode + handle): a notification carries at most
+  /// MTU - 3 bytes of payload (schema `gatt.mtu.rule`).
+  static const int _attNotificationOverheadBytes = 3;
+
   /// Below this negotiated MTU, version 2 packets are expected (the firmware
-  /// falls back to it on its own) and not a sign of old firmware.
-  static const int _mtuTooSmallForV3 = 40;
+  /// falls back to it on its own: even the smallest full layout, version 3,
+  /// does not fit) and not a sign of old firmware.
+  static const int _mtuTooSmallForV3 = BleTelemetry.totalBytesV3 + _attNotificationOverheadBytes;
+
+  /// True for the packet versions that carry the version-3 field set (ages,
+  /// CAN health, `imuActive`): version 3 and its superset, version 4.
+  static bool _hasV3Layout(int packetVersion) =>
+      packetVersion == TelemetryVersion.v3 || packetVersion == TelemetryVersion.v4;
 
   SessionRecorderState _state = SessionRecorderState.idle;
   SessionRecorderState get state => _state;
@@ -364,8 +385,8 @@ class SessionRecorder extends ChangeNotifier {
     final rxMonoMs = _stopwatch.elapsedMilliseconds;
     final rawHex = _bytesToHex(bytes);
 
-    // `seq` sits at the same offset (1) in both the version 2 and version 3
-    // layouts, so this peek is version-independent.
+    // `seq` sits at the same offset (1) in the version 2, 3 and 4 layouts, so
+    // this peek is version-independent.
     final seq = bytes.length > BleTelemetryV2Offsets.seq ? bytes[BleTelemetryV2Offsets.seq] : null;
     int? lostSincePrev;
     if (seq != null) {
@@ -388,17 +409,11 @@ class SessionRecorder extends ChangeNotifier {
       decodeError = 'empty packet';
     } else {
       rawVersion = bytes[0];
-      if (rawVersion == bleTelemetryV3Version) {
-        if (bytes.length != bleTelemetryV3TotalBytes) {
-          decodeError = 'size mismatch: got ${bytes.length} bytes (expected $bleTelemetryV3TotalBytes for version 3)';
-        }
-      } else if (rawVersion == bleTelemetryV2Version) {
-        if (bytes.length != bleTelemetryV2TotalBytes) {
-          decodeError = 'size mismatch: got ${bytes.length} bytes (expected $bleTelemetryV2TotalBytes for version 2)';
-        }
-      } else {
-        decodeError =
-            'version mismatch: got $rawVersion (expected $bleTelemetryV2Version or $bleTelemetryV3Version)';
+      final expectedLength = TelemetryData.expectedLength(rawVersion);
+      if (expectedLength == null || !BleTelemetry.acceptedVersions.contains(rawVersion)) {
+        decodeError = 'version mismatch: got $rawVersion (expected one of ${BleTelemetry.acceptedVersions.join('/')})';
+      } else if (bytes.length != expectedLength) {
+        decodeError = 'size mismatch: got ${bytes.length} bytes (expected $expectedLength for version $rawVersion)';
       }
     }
 
@@ -428,8 +443,8 @@ class SessionRecorder extends ChangeNotifier {
       _logEvent('packet_gap', 'lost=$lostSincePrev seq=$seq', rxUtc: rxUtc, rxMonoMs: rxMonoMs);
     }
 
-    if (rawVersion == bleTelemetryV2Version || rawVersion == bleTelemetryV3Version) {
-      _packetVersionCounts[rawVersion!] = (_packetVersionCounts[rawVersion] ?? 0) + 1;
+    if (rawVersion != null && BleTelemetry.acceptedVersions.contains(rawVersion)) {
+      _packetVersionCounts[rawVersion] = (_packetVersionCounts[rawVersion] ?? 0) + 1;
 
       if (_lastLoggedPacketVersion != rawVersion) {
         _logEvent('packet_version', 'version=$rawVersion', rxUtc: rxUtc, rxMonoMs: rxMonoMs);
@@ -439,7 +454,7 @@ class SessionRecorder extends ChangeNotifier {
       _trackFirmwareUpdateRecommendation(rawVersion, rxUtc, rxMonoMs);
     }
 
-    if (data != null && data.packetVersion == bleTelemetryV3Version) {
+    if (data != null && _hasV3Layout(data.packetVersion)) {
       _trackCanHealthEvent(data, rxUtc, rxMonoMs);
       _trackDidUnansweredEvent(data, rxUtc, rxMonoMs);
     }
@@ -451,7 +466,7 @@ class SessionRecorder extends ChangeNotifier {
     if (_firmwareRecommendationLogged || _firmwareCheckPacketsSeen >= _firmwareCheckPacketWindow) return;
 
     _firmwareCheckPacketsSeen++;
-    if (rawVersion == bleTelemetryV2Version) _firmwareCheckV2PacketsSeen++;
+    if (rawVersion == TelemetryVersion.v2) _firmwareCheckV2PacketsSeen++;
 
     if (_firmwareCheckPacketsSeen == _firmwareCheckPacketWindow) {
       final mtu = _currentMtu;
@@ -669,7 +684,7 @@ class SessionRecorder extends ChangeNotifier {
     required TelemetryData? data,
     required String? decodeError,
   }) {
-    final isV3 = data != null && data.packetVersion == bleTelemetryV3Version;
+    final hasV3Columns = data != null && _hasV3Layout(data.packetVersion);
 
     _telemetrySink?.writeln(_csvRow([
       rxUtc.toIso8601String(),
@@ -693,22 +708,32 @@ class SessionRecorder extends ChangeNotifier {
       data == null ? '' : (data.leanValid ? '1' : '0'),
       data == null ? '' : (data.ecuPresent ? '1' : '0'),
       decodeError ?? '',
-      // Version-3-only columns (contract §telemetry.csv): blank unless this
-      // row decoded as a version 3 packet.
+      // Version-3-and-later columns (contract §telemetry.csv): blank unless
+      // this row decoded as a version 3 or version 4 packet.
       data?.packetVersion.toString() ?? '',
-      isV3 ? (data.deviceTimeMs?.toString() ?? '') : '',
-      isV3 ? (data.rpmAgeMs?.toString() ?? '') : '',
-      isV3 ? (data.speedAgeMs?.toString() ?? '') : '',
-      isV3 ? (data.coolantTempAgeMs?.toString() ?? '') : '',
-      isV3 ? (data.throttlePosAgeMs?.toString() ?? '') : '',
-      isV3 ? (data.batteryVoltAgeMs?.toString() ?? '') : '',
-      isV3 ? (data.imuActive ? '1' : '0') : '',
-      isV3 ? (data.canBusState?.value.toString() ?? '') : '',
-      isV3 ? (data.canTxErrorCount?.toString() ?? '') : '',
-      isV3 ? (data.canRxErrorCount?.toString() ?? '') : '',
-      isV3 ? (data.canBusOffCount?.toString() ?? '') : '',
-      isV3 ? (data.unansweredDidCount?.toString() ?? '') : '',
-      isV3 ? (data.canFlags?.toString() ?? '') : '',
+      hasV3Columns ? (data.deviceTimeMs?.toString() ?? '') : '',
+      hasV3Columns ? (data.rpmAgeMs?.toString() ?? '') : '',
+      hasV3Columns ? (data.speedAgeMs?.toString() ?? '') : '',
+      hasV3Columns ? (data.coolantTempAgeMs?.toString() ?? '') : '',
+      hasV3Columns ? (data.throttlePosAgeMs?.toString() ?? '') : '',
+      hasV3Columns ? (data.batteryVoltAgeMs?.toString() ?? '') : '',
+      hasV3Columns ? (data.imuActive ? '1' : '0') : '',
+      hasV3Columns ? (data.canBusState?.value.toString() ?? '') : '',
+      hasV3Columns ? (data.canTxErrorCount?.toString() ?? '') : '',
+      hasV3Columns ? (data.canRxErrorCount?.toString() ?? '') : '',
+      hasV3Columns ? (data.canBusOffCount?.toString() ?? '') : '',
+      hasV3Columns ? (data.unansweredDidCount?.toString() ?? '') : '',
+      hasV3Columns ? (data.canFlags?.toString() ?? '') : '',
+      // Version-4-only columns (D-058 tester stats): the fields are null on
+      // version 2/3 and when decoding failed, so no guard is needed.
+      data?.stepGapMaxMs?.toString() ?? '',
+      data?.stepGapOverCount?.toString() ?? '',
+      data?.rttDid?.toString() ?? '',
+      data?.rttMinMs?.toString() ?? '',
+      data?.rttMaxMs?.toString() ?? '',
+      data?.rttSumMs?.toString() ?? '',
+      data?.rttCount?.toString() ?? '',
+      data?.rttNrc78Count?.toString() ?? '',
     ]));
   }
 }

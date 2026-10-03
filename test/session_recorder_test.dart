@@ -3,12 +3,13 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:moto_defs/moto_defs.dart';
 import 'package:moto_mobile/models/session_meta.dart';
 import 'package:moto_mobile/models/telemetry_data.dart';
 import 'package:moto_mobile/services/session_recorder.dart';
 
 import 'imu_block_test.dart' show buildImuBlockBytes;
-import 'telemetry_data_test.dart' show buildV2Packet, buildV3Packet;
+import 'telemetry_data_test.dart' show buildV2Packet, buildV3Packet, buildV4Packet;
 
 SessionMeta _testMeta() => const SessionMeta(
       sessionId: 'placeholder',
@@ -56,8 +57,9 @@ void main() {
       final decoded = jsonDecode(metaFile.readAsStringSync()) as Map<String, dynamic>;
       expect(decoded['session_id'], meta.sessionId);
       expect(decoded['rider_name'], 'Ali');
-      expect(decoded['ble_schema_version'], bleTelemetryV3Version);
-      expect(decoded['imu_block_version'], 1);
+      expect(decoded['ble_schema_version'], BleTelemetry.currentVersion);
+      expect(decoded['ble_schema_version'], 4);
+      expect(decoded['imu_block_version'], BleImuBlock.version);
       expect(decoded['requested_mtu'], 185);
 
       await recorder.stop();
@@ -70,12 +72,25 @@ void main() {
     });
   });
 
-  test('telemetry.csv header matches the documented 35 columns', () async {
+  test('telemetry.csv header matches the documented 43 columns', () async {
     await recorder.start(_testMeta());
     final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
     expect(lines.first.split(','), SessionRecorder.telemetryCsvHeader);
-    expect(SessionRecorder.telemetryCsvHeader, hasLength(35));
+    expect(SessionRecorder.telemetryCsvHeader, hasLength(43));
     await recorder.stop();
+  });
+
+  test('telemetry.csv ends with the eight version-4 tester-stats columns', () {
+    expect(SessionRecorder.telemetryCsvHeader.sublist(35), [
+      'step_gap_max_ms',
+      'step_gap_over_count',
+      'rtt_did',
+      'rtt_min_ms',
+      'rtt_max_ms',
+      'rtt_sum_ms',
+      'rtt_count',
+      'rtt_nrc78_count',
+    ]);
   });
 
   test('events.csv header matches the documented columns', () async {
@@ -83,6 +98,124 @@ void main() {
     final lines = File('${recorder.sessionDir!.path}/events.csv').readAsLinesSync();
     expect(lines.first.split(','), SessionRecorder.eventsCsvHeader);
     await recorder.stop();
+  });
+
+  const v4Columns = [
+    'step_gap_max_ms',
+    'step_gap_over_count',
+    'rtt_did',
+    'rtt_min_ms',
+    'rtt_max_ms',
+    'rtt_sum_ms',
+    'rtt_count',
+    'rtt_nrc78_count',
+  ];
+
+  group('version 4 telemetry rows', () {
+    test('a valid v4 packet fills the v3 columns and all eight tester-stats columns', () async {
+      await recorder.start(_testMeta());
+      recorder.handleRawPacket(buildV4Packet(
+        seq: 7,
+        deviceTimeMs: 99,
+        rpm: 2500,
+        speed: 30,
+        rpmAgeMs: 5,
+        canBusState: BleCanBusState.running,
+        canFlags: BleCanFlagsBits.pollerEnabled,
+        stepGapMaxMs: 250,
+        stepGapOverCount: 4,
+        rttDid: 0xF40C,
+        rttMinMs: 20,
+        rttMaxMs: 300,
+        rttSumMs: 4000000000,
+        rttCount: 100,
+        rttNrc78Count: 2,
+      ));
+      await recorder.stop();
+
+      final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
+      expect(lines.length, 2);
+      const header = SessionRecorder.telemetryCsvHeader;
+      final row = lines[1].split(',');
+      expect(row.length, header.length);
+      final byName = {for (var i = 0; i < header.length; i++) header[i]: row[i]};
+
+      expect(byName['seq'], '7');
+      expect(byName['decode_error'], '');
+      expect(byName['raw_hex']!.length, BleTelemetry.totalBytesV4 * 2);
+      expect(byName['packet_version'], '4');
+      expect(byName['device_time_ms'], '99');
+      expect(byName['rpm_age_ms'], '5');
+      expect(byName['can_bus_state'], '1');
+      expect(byName['can_flags'], '1');
+      expect(byName['step_gap_max_ms'], '250');
+      expect(byName['step_gap_over_count'], '4');
+      expect(byName['rtt_did'], '${0xF40C}');
+      expect(byName['rtt_min_ms'], '20');
+      expect(byName['rtt_max_ms'], '300');
+      expect(byName['rtt_sum_ms'], '4000000000');
+      expect(byName['rtt_count'], '100');
+      expect(byName['rtt_nrc78_count'], '2');
+    });
+
+    test('a v4 packet with no round-trip record writes the raw sentinels', () async {
+      await recorder.start(_testMeta());
+      recorder.handleRawPacket(buildV4Packet(seq: 1, rttDid: 0, rttMinMs: 65535, rttMaxMs: 0));
+      await recorder.stop();
+
+      final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
+      const header = SessionRecorder.telemetryCsvHeader;
+      final row = lines[1].split(',');
+      final byName = {for (var i = 0; i < header.length; i++) header[i]: row[i]};
+
+      expect(byName['rtt_did'], '0');
+      expect(byName['rtt_min_ms'], '65535');
+      expect(byName['rtt_max_ms'], '0');
+      expect(byName['rtt_sum_ms'], '0');
+      expect(byName['rtt_count'], '0');
+    });
+
+    test('a v4 byte with the wrong length keeps the row with a size-mismatch error and empty v4 columns', () async {
+      await recorder.start(_testMeta());
+      recorder.handleRawPacket(Uint8List.fromList([TelemetryVersion.v4, 3]));
+      final summary = await recorder.stop();
+
+      final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
+      const header = SessionRecorder.telemetryCsvHeader;
+      final row = lines[1].split(',');
+      final byName = {for (var i = 0; i < header.length; i++) header[i]: row[i]};
+
+      expect(byName['decode_error'], contains('size mismatch'));
+      expect(byName['decode_error'], contains('${BleTelemetry.totalBytesV4}'));
+      for (final column in v4Columns) {
+        expect(byName[column], '', reason: column);
+      }
+      expect(summary.decodeErrorCount, 1);
+    });
+
+    test('v4 packets feed the can_health and did_unanswered events like v3', () async {
+      await recorder.start(_testMeta());
+      recorder.handleRawPacket(buildV4Packet(seq: 0, canBusState: BleCanBusState.running, unansweredDidCount: 1));
+      recorder.handleRawPacket(buildV4Packet(seq: 1, canBusState: BleCanBusState.busOff, unansweredDidCount: 3));
+      await recorder.stop();
+
+      final events =
+          File('${recorder.sessionDir!.path}/events.csv').readAsLinesSync().skip(1).map((l) => l.split(',')).toList();
+      expect(events.where((e) => e[2] == 'can_health'), hasLength(2));
+      expect(events.where((e) => e[2] == 'did_unanswered').map((e) => e[3]), ['count=3;delta=2']);
+    });
+
+    test('a v4 packet counts as a full-layout packet, not as a reason to recommend a firmware update', () async {
+      await recorder.start(_testMeta());
+      for (var i = 0; i < 19; i++) {
+        recorder.handleRawPacket(buildV2Packet(seq: i));
+      }
+      recorder.handleRawPacket(buildV4Packet(seq: 19));
+      expect(recorder.firmwareUpdateRecommended, isFalse);
+      final summary = await recorder.stop();
+
+      expect(summary.packetVersions, {2: 19, 4: 1});
+    });
   });
 
   group('version 3 telemetry rows', () {
@@ -119,7 +252,7 @@ void main() {
       expect(byName['rpm'], '4500.0');
       expect(byName['speed_kmh'], '80');
       expect(byName['decode_error'], '');
-      expect(byName['raw_hex']!.length, bleTelemetryV3TotalBytes * 2);
+      expect(byName['raw_hex']!.length, BleTelemetry.totalBytesV3 * 2);
       expect(byName['packet_version'], '3');
       expect(byName['device_time_ms'], '42');
       expect(byName['rpm_age_ms'], '10');
@@ -134,6 +267,10 @@ void main() {
       expect(byName['can_bus_off_count'], '0');
       expect(byName['unanswered_did_count'], '4');
       expect(byName['can_flags'], '1');
+      // Version-4-only columns stay empty on a version 3 row.
+      for (final column in v4Columns) {
+        expect(byName[column], '', reason: column);
+      }
       // Lean columns: deprecated, always empty for v3.
       expect(byName['lean_deg'], '');
       expect(byName['max_lean_right_deg'], '');
@@ -142,7 +279,7 @@ void main() {
 
     test('an age of 65535 (neverReceived) writes an empty age column', () async {
       await recorder.start(_testMeta());
-      recorder.handleRawPacket(buildV3Packet(seq: 1, rpmAgeMs: bleTelemetryAgeNeverReceived));
+      recorder.handleRawPacket(buildV3Packet(seq: 1, rpmAgeMs: BleTelemetry.ageNeverReceived));
       await recorder.stop();
 
       final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
@@ -154,7 +291,7 @@ void main() {
   });
 
   group('version 2 telemetry rows (old firmware or low MTU)', () {
-    test('a v3 app still writes v2 packets, with packet_version=2 and v3-only columns empty', () async {
+    test('v2 packets are still written, with packet_version=2 and the v3/v4-only columns empty', () async {
       await recorder.start(_testMeta());
       recorder.handleRawPacket(buildV2Packet(seq: 9, rpm: 3000, speed: 40, flags: 0x7F));
       await recorder.stop();
@@ -166,7 +303,7 @@ void main() {
 
       expect(byName['rpm'], '3000.0');
       expect(byName['speed_kmh'], '40');
-      expect(byName['raw_hex']!.length, bleTelemetryV2TotalBytes * 2);
+      expect(byName['raw_hex']!.length, BleTelemetry.totalBytesV2 * 2);
       expect(byName['packet_version'], '2');
       expect(byName['device_time_ms'], '');
       expect(byName['rpm_age_ms'], '');
@@ -181,6 +318,9 @@ void main() {
       expect(byName['can_bus_off_count'], '');
       expect(byName['unanswered_did_count'], '');
       expect(byName['can_flags'], '');
+      for (final column in v4Columns) {
+        expect(byName[column], '', reason: column);
+      }
     });
   });
 
@@ -240,7 +380,7 @@ void main() {
 
     test('a version-3 byte with the wrong length is written with a size-mismatch decode_error', () async {
       await recorder.start(_testMeta());
-      recorder.handleRawPacket(Uint8List.fromList([bleTelemetryV3Version, 3]));
+      recorder.handleRawPacket(Uint8List.fromList([TelemetryVersion.v3, 3]));
       final summary = await recorder.stop();
 
       final lines = File('${recorder.sessionDir!.path}/telemetry.csv').readAsLinesSync();
@@ -292,6 +432,22 @@ void main() {
           .map((l) => l.split(',')[3])
           .toList();
       expect(events, ['version=3', 'version=2']);
+    });
+
+    test('logs version=4 for a v4 packet and counts it in the summary', () async {
+      await recorder.start(_testMeta());
+      recorder.handleRawPacket(buildV4Packet(seq: 0));
+      recorder.handleRawPacket(buildV4Packet(seq: 1));
+      final summary = await recorder.stop();
+
+      final events = File('${recorder.sessionDir!.path}/events.csv')
+          .readAsLinesSync()
+          .skip(1)
+          .where((l) => l.split(',')[2] == 'packet_version')
+          .map((l) => l.split(',')[3])
+          .toList();
+      expect(events, ['version=4']);
+      expect(summary.packetVersions, {4: 2});
     });
   });
 
@@ -543,6 +699,13 @@ void main() {
     expect(decoded.containsKey('imu_missing_samples'), isTrue);
     expect(decoded.containsKey('imu_loss_percent'), isTrue);
     expect(decoded.containsKey('mtu'), isTrue);
+  });
+
+  test('SessionMeta defaults to the current schema version, and to 3 for old meta.json files', () {
+    expect(_testMeta().bleSchemaVersion, BleTelemetry.currentVersion);
+
+    final legacyJson = _testMeta().toJson()..remove('ble_schema_version');
+    expect(SessionMeta.fromJson(legacyJson).bleSchemaVersion, TelemetryVersion.v3);
   });
 
   test('SessionMeta round-trips through JSON', () {

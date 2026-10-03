@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:moto_defs/moto_defs.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -189,7 +190,7 @@ class _RecordScreenState extends State<RecordScreen> {
       routeType: _routeType,
       note: _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
       deviceName: widget.bleService.connectedDeviceName,
-      requestedMtu: BleService.requestedMtu,
+      requestedMtu: BleGatt.requestedMtu,
     );
   }
 

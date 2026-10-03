@@ -1,5 +1,6 @@
-import 'imu_block.dart' as imu_block_schema;
-import 'telemetry_data.dart' show bleTelemetryV3Version;
+import 'package:moto_defs/moto_defs.dart';
+
+import 'telemetry_data.dart' show TelemetryVersion;
 
 /// App version string. Keep in sync with the `version:` field in
 /// pubspec.yaml. Recorded in every session's meta.json so a CSV export can
@@ -76,9 +77,9 @@ class SessionMeta {
     this.routeType,
     this.note,
     this.appVersion = kAppVersion,
-    this.bleSchemaVersion = bleTelemetryV3Version,
+    this.bleSchemaVersion = BleTelemetry.currentVersion,
     this.deviceName,
-    this.imuBlockVersion = imu_block_schema.imuBlockVersion,
+    this.imuBlockVersion = BleImuBlock.version,
     this.requestedMtu,
   });
 
@@ -120,7 +121,7 @@ class SessionMeta {
         routeType: json['route_type'] as String?,
         note: json['note'] as String?,
         appVersion: json['app_version'] as String? ?? kAppVersion,
-        bleSchemaVersion: json['ble_schema_version'] as int? ?? bleTelemetryV3Version,
+        bleSchemaVersion: json['ble_schema_version'] as int? ?? TelemetryVersion.v3,
         deviceName: json['device_name'] as String?,
         imuBlockVersion: json['imu_block_version'] as int?,
         requestedMtu: json['requested_mtu'] as int?,

@@ -10,32 +10,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: 3.47.5
 
+      # moto_defs (BLE packet layout, D-061) is a path dependency generated
+      # from the external/moto-vehicle-defs submodule.
       - run: flutter pub get
-
-      # moto-connectivity-node is public (D-033): the single-source schema is read
-      # without a token. A failed fetch fails the job instead of skipping the check.
-      - name: Fetch BLE schema source (moto-connectivity-node)
-        run: |
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/ble_schema.json" \
-            https://raw.githubusercontent.com/moto-platform/moto-connectivity-node/main/docs/ble_telemetry_packet_schema.json
-          echo "MOTO_CONN_SCHEMA=$RUNNER_TEMP/ble_schema.json" >> "$GITHUB_ENV"
-          echo "MOTO_SCHEMA_DRIFT_REQUIRED=1" >> "$GITHUB_ENV"
 
       - run: flutter analyze
 
       - run: flutter test
+
+      # D-003/D-036: consumers pin defs to a release tag, never a branch commit.
+      # Last, so analyze and test still report on a commit pin before the tag.
+      - name: Defs pin must be a release tag
+        run: |
+          git -C external/moto-vehicle-defs fetch --quiet --depth=1 origin '+refs/tags/*:refs/tags/*'
+          tag=$(git -C external/moto-vehicle-defs tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+          test -n "$tag" || { echo "::error::external/moto-vehicle-defs is not pinned to a vX.Y.Z release tag"; exit 1; }
+          echo "defs pin: $tag"
 
   build-apk:
     needs: flutter
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: subosito/flutter-action@v2
         with:
