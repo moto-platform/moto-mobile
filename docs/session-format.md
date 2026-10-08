@@ -8,7 +8,7 @@ against the same contract independently -- if you change anything here,
 change it on both sides together.
 
 The BLE packet layouts referenced throughout (telemetry versions 2, 3 and 4,
-and the IMU block) have exactly one source of truth: `ble/ble_schema.json` in
+the IMU block and the GPS block) have exactly one source of truth: `ble/ble_schema.json` in
 `moto-vehicle-defs` (D-061). This repo takes it through the
 `external/moto-vehicle-defs` submodule and the generated Dart package
 `moto_defs` (`package:moto_defs/moto_defs.dart`, a path dependency); there is
@@ -34,6 +34,8 @@ telemetry version -- sessions recorded by the earlier app carry `3`),
 New keys (D-032):
 - `imu_block_version` (int, `1`) -- the IMU block schema version this app
   decodes.
+- `gps_block_version` (int, `1`, D-060) -- the GPS block schema version this
+  app decodes (absent in sessions from earlier app builds).
 - `requested_mtu` (int, `185`) -- the ATT MTU this app requests right after
   connecting (the schema's `gatt.mtu.requested`, generated as
   `BleGatt.requestedMtu`), regardless of what was actually
@@ -142,6 +144,57 @@ ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps
   range) never gets a row here -- it is counted as a `decode_error` event
   instead (see below) and simply skipped.
 
+## gps.csv (optional, D-060)
+
+Speed and heading of connectivity-node's GPS, from the schema's `gpsBlock`
+(notified on the `gps` characteristic, one block per UBX-NAV-PVT, 10 Hz).
+**There is no position:** latitude, longitude and height never leave the node
+(D-060 item 3, invariant 7), and moto-server rejects a `gps.csv` whose header
+is not exactly the one below.
+
+Created lazily, the first time a GPS block decodes successfully -- a session
+whose firmware has no `gps` characteristic, or whose phone is not bonded
+(see below), has no `gps.csv`. One row per **block**:
+
+```
+rx_utc_iso,rx_mono_ms,seq,lost_since_prev,raw_hex,device_time_ms,
+ground_speed,heading_of_motion,speed_accuracy,heading_accuracy,fix_type,
+num_sv,flags,ground_speed_mps,heading_of_motion_deg,speed_accuracy_mps,
+heading_accuracy_deg,gnss_fix_ok,parse_error,uart_overflow
+```
+
+- `raw_hex` is lowercase hex of the whole 26-byte block and is
+  authoritative: moto-server re-decodes it and uses the other columns only as
+  a consistency check.
+- `lost_since_prev` = `(seq - prev.seq - 1) mod 256` (schema `sequenceRule`;
+  0 for the first block of the session). It counts blocks lost on the radio
+  **and** blocks the node skipped because the MTU was too small (D-062 item
+  2), so it is not a radio-loss figure.
+- `device_time_ms` ... `flags` are the raw fields (their schema names in
+  snake_case, wire units: mm/s and 1e-5 deg). `ground_speed` and
+  `heading_of_motion` are signed.
+- `*_mps` / `*_deg` are `raw / scale` using the schema's `gpsBlock.scale`.
+- `fix_type` is the NAV-PVT value (`BleGpsFixType`); the CAN speed check uses
+  only rows with `fix_type` 3 or 4 and `gnss_fix_ok=1` (schema
+  `fixType.rule`).
+- `gnss_fix_ok`, `parse_error`, `uart_overflow` are the flag bits (`1`/`0`).
+  The two error flags cover the interval since the previous block, sent or
+  skipped.
+- A block that fails to decode (wrong size or version) gets no row; it is a
+  `decode_error` event with a `gps:` prefix.
+
+**Bonded link (D-062).** The `gps` characteristic accepts a subscription only
+on a bonded, encrypted link. After telemetry and IMU are subscribed, the app
+bonds first on Android (system pairing dialog; iOS pairs on its own when the
+subscription is refused), then subscribes. It tries once per connection: the
+node clears the subscription on every connect, so it subscribes again on the
+next one. A failure never affects telemetry or IMU.
+
+**Residual privacy risk (D-060 item 5).** A speed + heading series can rebuild
+the route's shape by dead reckoning. A session with `gps.csv` goes only to
+the user's own local moto-server (Phase 0 runs it on the laptop), never to a
+server that is not local, and real sessions are never committed (D-033).
+
 ## events.csv (unchanged header)
 
 ```
@@ -172,6 +225,16 @@ New events (D-032):
 - `decode_error` is also used for a bad IMU block, with the detail prefixed
   `imu:` so it is distinguishable from a telemetry decode error.
 
+New events (D-060, D-062):
+- `gps_gap` -- `detail=missing=<n>;seq=<s>`, whenever a GPS block's
+  `lost_since_prev` is greater than 0 (lost or MTU-skipped).
+- `gps_subscribed` -- empty detail, when the `gps` subscription succeeds on a
+  connection (logged once per change of the subscription state).
+- `gps_subscribe_failed` -- `detail=reason=<error>`, when bonding or the
+  subscription fails. Bluetooth addresses and device ids in the error are
+  replaced with `<device>` / `<id>` (D-033).
+- `decode_error` with the detail prefixed `gps:` for a bad GPS block.
+
 ## summary.json (written on stop)
 
 Existing keys: `duration_ms`, `packet_count`, `lost_count`, `loss_percent`,
@@ -186,12 +249,18 @@ New keys (D-032):
   IMU data ever arrived).
 - `mtu` -- last negotiated ATT MTU, or `null` if never reported.
 
+New keys (D-060):
+- `gps_block_count`, `gps_lost_or_skipped_blocks`,
+  `gps_lost_or_skipped_percent` -- GPS totals for the session (0 / `0.0` when
+  no GPS block arrived); "lost or skipped" as in `gps.csv`'s
+  `lost_since_prev`.
+
 ## Upload to moto-server
 
 - `POST {baseUrl}/sessions`, `multipart/form-data`, field name `archive`,
   filename `<session_id>.zip`, header `Authorization: Bearer <token>`.
 - The archive contains, at its root: `meta.json`, `telemetry.csv`,
-  `events.csv`, `summary.json`, and `imu.csv` if present. It never contains
+  `events.csv`, `summary.json`, and `imu.csv` / `gps.csv` if present. It never contains
   `upload.json` (see below) -- that is app-local bookkeeping, not session
   data.
 - Responses: `201` created, `200` already uploaded (idempotent, treated as

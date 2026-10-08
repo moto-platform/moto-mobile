@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:moto_defs/moto_defs.dart';
+import '../models/gps_block.dart';
 import '../models/telemetry_data.dart';
 
 /// BLE client. GATT UUIDs and the requested ATT MTU come from the generated
@@ -23,6 +24,7 @@ class BleService {
   StreamSubscription? _deviceStateSubscription;
   StreamSubscription? _valueSubscription;
   StreamSubscription? _imuValueSubscription;
+  StreamSubscription? _gpsValueSubscription;
   StreamSubscription<int>? _mtuSubscription;
 
   final StreamController<TelemetryData> _telemetryStreamController = StreamController<TelemetryData>.broadcast();
@@ -39,6 +41,24 @@ class BleService {
   /// never emit for such a connection -- that is not itself an error.
   final StreamController<Uint8List> _rawImuBlockStreamController = StreamController<Uint8List>.broadcast();
   Stream<Uint8List> get rawImuBlockStream => _rawImuBlockStreamController.stream;
+
+  /// Every raw GPS block notification payload, before decoding (D-060).
+  /// Emits only while [gpsLinkStatus] is subscribed; firmware without a GPS
+  /// has no `gps` characteristic, so this may never emit.
+  final StreamController<Uint8List> _rawGpsBlockStreamController = StreamController<Uint8List>.broadcast();
+  Stream<Uint8List> get rawGpsBlockStream => _rawGpsBlockStreamController.stream;
+
+  /// The `gps` subscription state of the current connection (D-062: bonded
+  /// link required). The latest value is also kept in [gpsLinkStatus].
+  final StreamController<GpsLinkStatus> _gpsLinkStreamController = StreamController<GpsLinkStatus>.broadcast();
+  Stream<GpsLinkStatus> get gpsLinkStream => _gpsLinkStreamController.stream;
+  GpsLinkStatus _gpsLinkStatus = GpsLinkStatus.disconnected;
+  GpsLinkStatus get gpsLinkStatus => _gpsLinkStatus;
+
+  void _setGpsLink(GpsLinkStatus status) {
+    _gpsLinkStatus = status;
+    _gpsLinkStreamController.add(status);
+  }
 
   final StreamController<bool> _connectionStateController = StreamController<bool>.broadcast();
   Stream<bool> get connectionStream => _connectionStateController.stream;
@@ -104,7 +124,9 @@ class BleService {
               if (!isConn) {
                 _valueSubscription?.cancel();
                 _imuValueSubscription?.cancel();
+                _gpsValueSubscription?.cancel();
                 _mtuSubscription?.cancel();
+                _setGpsLink(GpsLinkStatus.disconnected);
               }
             });
 
@@ -134,6 +156,7 @@ class BleService {
               }
             }
 
+            BluetoothCharacteristic? gpsCharacteristic;
             List<BluetoothService> services = await _targetDevice!.discoverServices();
             for (var service in services) {
               if (service.uuid.toString().toLowerCase() == BleGatt.serviceUuid.toLowerCase()) {
@@ -171,11 +194,23 @@ class BleService {
 
                     await characteristic.setNotifyValue(true);
                   }
+                  if (characteristic.uuid.toString().toLowerCase() == BleGatt.gpsCharacteristicUuid.toLowerCase()) {
+                    gpsCharacteristic = characteristic;
+                  }
                   if (characteristic.uuid.toString().toLowerCase() == BleGatt.telematicsRxCharacteristicUuid.toLowerCase()) {
                     _rxCharacteristic = characteristic;
                   }
                 }
               }
+            }
+
+            // GPS last, after telemetry and IMU are already flowing: its
+            // bonding step may wait on the user, and a failure here must
+            // never affect the other two (D-062 item 1).
+            if (gpsCharacteristic == null) {
+              _setGpsLink(const GpsLinkStatus(GpsLinkState.notOffered));
+            } else {
+              await _subscribeGps(_targetDevice!, gpsCharacteristic);
             }
             break;
           }
@@ -186,6 +221,45 @@ class BleService {
       _connectionStateController.add(false);
     } finally {
       _isConnecting = false;
+    }
+  }
+
+  /// Subscribes to the `gps` characteristic, once per connection (D-062).
+  ///
+  /// Its CCCD accepts only encrypted writes, so the link must be bonded. On
+  /// Android an unbonded device is bonded first (`createBond` shows the
+  /// system pairing dialog); iOS starts pairing on its own when the CCCD
+  /// write is rejected for insufficient authentication. The node clears the
+  /// CCCD on every connect, so this runs again on each new connection. A
+  /// failure is reported as [GpsLinkState.failed] (device ids redacted) and
+  /// not retried until the next connection.
+  Future<void> _subscribeGps(BluetoothDevice device, BluetoothCharacteristic characteristic) async {
+    _setGpsLink(const GpsLinkStatus(GpsLinkState.subscribing));
+    try {
+      if (!kIsWeb && Platform.isAndroid) {
+        final bond = await device.bondState.first;
+        if (bond != BluetoothBondState.bonded) {
+          await device.createBond();
+        }
+      }
+
+      await _gpsValueSubscription?.cancel();
+      _gpsValueSubscription = characteristic.lastValueStream.listen((value) {
+        if (value.isNotEmpty) {
+          _rawGpsBlockStreamController.add(Uint8List.fromList(value));
+        }
+      }, onError: (err) {
+        debugPrint("BLE GPS value stream error: ${redactDeviceIds('$err')}");
+      });
+
+      await characteristic.setNotifyValue(true);
+      _setGpsLink(const GpsLinkStatus(GpsLinkState.subscribed));
+    } catch (e) {
+      await _gpsValueSubscription?.cancel();
+      _gpsValueSubscription = null;
+      final reason = redactDeviceIds('$e');
+      debugPrint("BLE GPS subscribe failed: $reason");
+      _setGpsLink(GpsLinkStatus(GpsLinkState.failed, reason: reason));
     }
   }
 
@@ -204,6 +278,7 @@ class BleService {
     await _scanSubscription?.cancel();
     await _valueSubscription?.cancel();
     await _imuValueSubscription?.cancel();
+    await _gpsValueSubscription?.cancel();
     await _mtuSubscription?.cancel();
     await _deviceStateSubscription?.cancel();
     if (_targetDevice != null) {
@@ -211,6 +286,7 @@ class BleService {
       _targetDevice = null;
     }
     _negotiatedMtu = null;
+    _setGpsLink(GpsLinkStatus.disconnected);
     _connectionStateController.add(false);
   }
 }
