@@ -274,3 +274,8 @@ New keys (D-060):
 - "Upload only on Wi-Fi" (default on, Settings screen) blocks an upload when
   Wi-Fi is confirmed absent *or* unknown -- an unknown state is only ever
   let through when the setting itself is off.
+- A session with `gps.csv` uploads only to a local server (D-063,
+  `isLocalServerUrl`): `localhost`, a `.local` name, or a loopback, private
+  (RFC 1918, IPv6 ULA) or link-local address. Any other host fails the
+  upload before a network call, with reason `session has GPS data: upload
+  only to a local server (D-063)`. Sessions without `gps.csv` are unaffected.

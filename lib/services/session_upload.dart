@@ -126,6 +126,18 @@ class SessionUploader {
       return status;
     }
 
+    // Speed + heading can rebuild the route (D-060 item 5), so a session with
+    // gps.csv never leaves for a server that is not on the local network.
+    final dir = await _sessionDir(sessionId);
+    if (!isLocalServerUrl(settings.serverBaseUrl) && await File('${dir.path}/gps.csv').exists()) {
+      const status = SessionUploadStatus(
+        state: SessionUploadState.failed,
+        reason: 'session has GPS data: upload only to a local server (D-063)',
+      );
+      await _writeStatus(sessionId, status);
+      return status;
+    }
+
     if (settings.uploadOnlyOnWifi) {
       final onWifi = await _networkInfo.isOnWifi;
       // "Unknown" is only ever allowed through when the Wi-Fi-only setting
@@ -143,7 +155,6 @@ class SessionUploader {
 
     await _writeStatus(sessionId, const SessionUploadStatus(state: SessionUploadState.uploading));
 
-    final dir = await _sessionDir(sessionId);
     final archiveBytes = await buildSessionArchiveBytes(dir);
 
     final result = await _uploadClient.uploadSession(

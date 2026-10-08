@@ -176,6 +176,84 @@ void main() {
       );
       expect(status.state, SessionUploadState.uploaded);
     });
+
+    test('a session with gps.csv is never sent to a server that is not local (D-063)', () async {
+      await File('${sessionDir.path}/gps.csv').writeAsString('a,b\n1,2\n');
+      var called = false;
+      final uploader = SessionUploader(
+        documentsDirProvider: () async => tempDir,
+        uploadClient: UploadClient(httpClient: MockClient((_) async {
+          called = true;
+          return http.Response('', 201);
+        })),
+        networkInfo: _FixedNetworkInfo(true),
+      );
+
+      final status = await uploader.upload(
+        '20260927-120000-ab12',
+        const AppSettings(serverBaseUrl: 'https://moto.example.com', apiToken: 't'),
+      );
+      expect(status.state, SessionUploadState.failed);
+      expect(status.reason, contains('D-063'));
+      expect(called, isFalse);
+      expect((await uploader.readStatus('20260927-120000-ab12')).state, SessionUploadState.failed);
+    });
+
+    test('a session with gps.csv uploads to a local server, gps.csv included', () async {
+      await File('${sessionDir.path}/gps.csv').writeAsString('a,b\n1,2\n');
+      String? body;
+      final uploader = SessionUploader(
+        documentsDirProvider: () async => tempDir,
+        uploadClient: UploadClient(httpClient: MockClient((request) async {
+          body = latin1.decode(request.bodyBytes);
+          return http.Response('', 201);
+        })),
+        networkInfo: _FixedNetworkInfo(true),
+      );
+
+      final status = await uploader.upload(
+        '20260927-120000-ab12',
+        const AppSettings(serverBaseUrl: 'http://192.168.1.20:8000', apiToken: 't'),
+      );
+      expect(status.state, SessionUploadState.uploaded);
+      expect(body, contains('gps.csv'));
+    });
+  });
+
+  group('isLocalServerUrl', () {
+    test('accepts the phone, the LAN and mDNS names', () {
+      for (final url in [
+        'http://localhost:8000',
+        'http://127.0.0.1:8000',
+        'http://[::1]:8000',
+        'http://10.0.2.2:8000',
+        'http://172.16.0.5',
+        'http://172.31.255.1',
+        'https://192.168.1.20:8443',
+        'http://169.254.10.1',
+        'http://[fe80::1]:8000',
+        'http://[fd12:3456::1]:8000',
+        'http://moto-laptop.local:8000',
+      ]) {
+        expect(isLocalServerUrl(url), isTrue, reason: url);
+      }
+    });
+
+    test('rejects public hosts, names and malformed input', () {
+      for (final url in [
+        'https://moto.example.com',
+        'http://8.8.8.8',
+        'http://172.32.0.1',
+        'http://192.169.1.1',
+        'http://[2001:db8::1]',
+        'http://moto-laptop',
+        'not a url',
+        '',
+        null,
+      ]) {
+        expect(isLocalServerUrl(url), isFalse, reason: url);
+      }
+    });
   });
 
   group('AppSettingsStore', () {
