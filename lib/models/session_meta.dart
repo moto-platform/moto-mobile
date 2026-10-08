@@ -5,7 +5,7 @@ import 'telemetry_data.dart' show TelemetryVersion;
 /// App version string. Keep in sync with the `version:` field in
 /// pubspec.yaml. Recorded in every session's meta.json so a CSV export can
 /// always be traced back to the app build that produced it.
-const String kAppVersion = '0.1.0+2'; // keep equal to pubspec.yaml
+const String kAppVersion = '0.2.0+3'; // keep equal to pubspec.yaml
 
 /// Metadata captured once per ride-recording session, per the
 /// moto-vehicle-defs phase0 data-collection plan §3.2. Persisted verbatim as
