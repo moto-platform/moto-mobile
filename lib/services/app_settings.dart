@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -48,6 +50,26 @@ bool isCleartextRemoteUrl(String? url) {
   if (uri == null || uri.scheme.toLowerCase() != 'http') return false;
   const local = {'localhost', '127.0.0.1', '::1'};
   return !local.contains(uri.host.toLowerCase());
+}
+
+/// True when [url]'s host is on the phone's own network: `localhost`, an
+/// mDNS `.local` name, or a loopback, private (RFC 1918 / IPv6 ULA) or
+/// link-local address. A session with `gps.csv` uploads only to such a host
+/// (D-063). Decided from the URL alone: a public name that resolves to a LAN
+/// address counts as not local, so the guard can only err towards blocking.
+bool isLocalServerUrl(String? url) {
+  final uri = Uri.tryParse(url?.trim() ?? '');
+  if (uri == null || uri.host.isEmpty) return false;
+  final host = uri.host.toLowerCase();
+  if (host == 'localhost' || host.endsWith('.local')) return true;
+  final address = InternetAddress.tryParse(host);
+  if (address == null) return false;
+  if (address.isLoopback || address.isLinkLocal) return true;
+  final b = address.rawAddress;
+  if (address.type == InternetAddressType.IPv4) {
+    return b[0] == 10 || (b[0] == 172 && (b[1] & 0xF0) == 16) || (b[0] == 192 && b[1] == 168);
+  }
+  return (b[0] & 0xFE) == 0xFC; // IPv6 unique local, fc00::/7
 }
 
 /// Minimal key/value secret storage, injectable so tests do not need the
