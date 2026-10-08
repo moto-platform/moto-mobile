@@ -39,9 +39,12 @@ change is a defs change plus a version bump, never a hand edit here.
 ## Ride session files and moto-server upload
 
 Recording a ride writes `meta.json`, `telemetry.csv`, `events.csv`,
-`summary.json` and (when the connected device sends IMU data) `imu.csv` to
-`<app documents>/sessions/<session_id>/` -- see `docs/session-format.md` for
-the exact contract shared with `moto-server`. Sessions can be shared locally
+`summary.json` and (when the connected device sends IMU or GPS data) `imu.csv`
+and `gps.csv` to `<app documents>/sessions/<session_id>/` -- see
+`docs/session-format.md` for the exact contract shared with `moto-server`.
+GPS is speed and heading only (D-060), and its characteristic needs the phone
+to be paired (bonded) with the bike (D-062): on Android the app starts the
+pairing on connect; telemetry and IMU work without it. Sessions can be shared locally
 at any time; uploading them to a configured `moto-server` is a separate,
 optional action (Settings screen sets the server URL/API token) and never
 blocks recording or sharing.

@@ -57,6 +57,10 @@ class SessionMeta {
   /// if this app build predates the IMU block.
   final int? imuBlockVersion;
 
+  /// GPS block format version this app decodes (schema `gpsBlock.version`,
+  /// D-060), or `null` if this app build predates the GPS block.
+  final int? gpsBlockVersion;
+
   /// ATT MTU requested right after connecting (schema `gatt.mtu.requested`),
   /// or `null` if this app build predates MTU negotiation.
   final int? requestedMtu;
@@ -80,6 +84,7 @@ class SessionMeta {
     this.bleSchemaVersion = BleTelemetry.currentVersion,
     this.deviceName,
     this.imuBlockVersion = BleImuBlock.version,
+    this.gpsBlockVersion = BleGpsBlock.version,
     this.requestedMtu,
   });
 
@@ -102,6 +107,7 @@ class SessionMeta {
         'ble_schema_version': bleSchemaVersion,
         'device_name': deviceName,
         'imu_block_version': imuBlockVersion,
+        'gps_block_version': gpsBlockVersion,
         'requested_mtu': requestedMtu,
       };
 
@@ -124,6 +130,7 @@ class SessionMeta {
         bleSchemaVersion: json['ble_schema_version'] as int? ?? TelemetryVersion.v3,
         deviceName: json['device_name'] as String?,
         imuBlockVersion: json['imu_block_version'] as int?,
+        gpsBlockVersion: json['gps_block_version'] as int?,
         requestedMtu: json['requested_mtu'] as int?,
       );
 
@@ -146,6 +153,7 @@ class SessionMeta {
     int? bleSchemaVersion,
     String? deviceName,
     int? imuBlockVersion,
+    int? gpsBlockVersion,
     int? requestedMtu,
   }) =>
       SessionMeta(
@@ -167,6 +175,7 @@ class SessionMeta {
         bleSchemaVersion: bleSchemaVersion ?? this.bleSchemaVersion,
         deviceName: deviceName ?? this.deviceName,
         imuBlockVersion: imuBlockVersion ?? this.imuBlockVersion,
+        gpsBlockVersion: gpsBlockVersion ?? this.gpsBlockVersion,
         requestedMtu: requestedMtu ?? this.requestedMtu,
       );
 }

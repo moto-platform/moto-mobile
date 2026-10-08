@@ -100,12 +100,12 @@ class SessionStore {
   }
 
   /// The session's files that exist, in a sensible share order: meta.json,
-  /// telemetry.csv, events.csv, summary.json, imu.csv. Deliberately excludes
+  /// telemetry.csv, events.csv, summary.json, imu.csv, gps.csv. Deliberately excludes
   /// `upload.json` -- that is app-local bookkeeping, not session data.
   Future<List<File>> shareableFiles(String sessionId) async {
     final root = await rootDir();
     final dir = Directory('${root.path}/$sessionId');
-    const candidates = ['meta.json', 'telemetry.csv', 'events.csv', 'summary.json', 'imu.csv'];
+    const candidates = ['meta.json', 'telemetry.csv', 'events.csv', 'summary.json', 'imu.csv', 'gps.csv'];
     final files = <File>[];
     for (final name in candidates) {
       final file = File('${dir.path}/$name');

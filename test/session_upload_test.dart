@@ -58,6 +58,14 @@ void main() {
       expect(names.contains('imu.csv'), isTrue);
     });
 
+    test('includes gps.csv when present', () async {
+      await File('${sessionDir.path}/gps.csv').writeAsString('a,b\n1,2\n');
+      final bytes = await buildSessionArchiveBytes(sessionDir);
+      final archive = ZipDecoder().decodeBytes(bytes);
+      final names = archive.files.map((f) => f.name).toSet();
+      expect(names.contains('gps.csv'), isTrue);
+    });
+
     test('archived file contents round-trip byte-for-byte', () async {
       final bytes = await buildSessionArchiveBytes(sessionDir);
       final archive = ZipDecoder().decodeBytes(bytes);

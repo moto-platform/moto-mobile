@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:moto_defs/moto_defs.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../models/gps_block.dart';
 import '../models/imu_block.dart';
 import '../models/session_meta.dart';
 import '../models/telemetry_data.dart';
@@ -47,6 +48,12 @@ class SessionSummary {
   final int imuMissingSamples;
   final double imuLossPercent;
 
+  /// GPS blocks recorded, and blocks lost or MTU-skipped from `seq` gaps
+  /// (D-060, D-062 item 2: not a radio-loss figure).
+  final int gpsBlockCount;
+  final int gpsLostOrSkippedBlocks;
+  final double gpsLostOrSkippedPercent;
+
   /// Last negotiated ATT MTU, or `null` if never reported this session.
   final int? mtu;
 
@@ -64,6 +71,9 @@ class SessionSummary {
     this.imuSampleCount = 0,
     this.imuMissingSamples = 0,
     this.imuLossPercent = 0.0,
+    this.gpsBlockCount = 0,
+    this.gpsLostOrSkippedBlocks = 0,
+    this.gpsLostOrSkippedPercent = 0.0,
     this.mtu,
   });
 
@@ -81,6 +91,9 @@ class SessionSummary {
         'imu_sample_count': imuSampleCount,
         'imu_missing_samples': imuMissingSamples,
         'imu_loss_percent': imuLossPercent,
+        'gps_block_count': gpsBlockCount,
+        'gps_lost_or_skipped_blocks': gpsLostOrSkippedBlocks,
+        'gps_lost_or_skipped_percent': gpsLostOrSkippedPercent,
         'mtu': mtu,
       };
 
@@ -100,18 +113,22 @@ class SessionSummary {
         imuSampleCount: json['imu_sample_count'] as int? ?? 0,
         imuMissingSamples: json['imu_missing_samples'] as int? ?? 0,
         imuLossPercent: (json['imu_loss_percent'] as num?)?.toDouble() ?? 0.0,
+        gpsBlockCount: json['gps_block_count'] as int? ?? 0,
+        gpsLostOrSkippedBlocks: json['gps_lost_or_skipped_blocks'] as int? ?? 0,
+        gpsLostOrSkippedPercent: (json['gps_lost_or_skipped_percent'] as num?)?.toDouble() ?? 0.0,
         mtu: json['mtu'] as int?,
       );
 }
 
 enum SessionRecorderState { idle, recording }
 
-/// Records raw BLE telemetry and IMU notifications to a per-session
+/// Records raw BLE telemetry, IMU and GPS notifications to a per-session
 /// directory as `meta.json`, `telemetry.csv`, `events.csv` and (when any IMU
-/// block arrives) `imu.csv`, and writes a `summary.json` on stop.
+/// or GPS block arrives) `imu.csv` / `gps.csv`, and writes a `summary.json`
+/// on stop.
 ///
-/// Field decoding is delegated entirely to [TelemetryData.fromBinaryBuffer]
-/// and [ImuBlock.decode] -- the single sources of truth for the BLE packet
+/// Field decoding is delegated entirely to [TelemetryData.fromBinaryBuffer],
+/// [ImuBlock.decode] and [GpsBlock.decode] -- the single sources of truth for the BLE packet
 /// schema. This class only adds timing, sequence/gap bookkeeping and
 /// CSV/JSON formatting around them; it never re-implements offset/scale
 /// logic.
@@ -205,6 +222,32 @@ class SessionRecorder extends ChangeNotifier {
     'gz_dps',
   ];
 
+  /// gps.csv (D-060): one row per GPS block. The raw columns are the schema's
+  /// `gpsBlock` field names in snake_case; moto-server accepts exactly this
+  /// header. No position column exists (D-060 item 3).
+  static const List<String> gpsCsvHeader = [
+    'rx_utc_iso',
+    'rx_mono_ms',
+    'seq',
+    'lost_since_prev',
+    'raw_hex',
+    'device_time_ms',
+    'ground_speed',
+    'heading_of_motion',
+    'speed_accuracy',
+    'heading_accuracy',
+    'fix_type',
+    'num_sv',
+    'flags',
+    'ground_speed_mps',
+    'heading_of_motion_deg',
+    'speed_accuracy_mps',
+    'heading_accuracy_deg',
+    'gnss_fix_ok',
+    'parse_error',
+    'uart_overflow',
+  ];
+
   /// The first N telemetry packets considered for the
   /// `firmware_update_recommended` heuristic (contract §events.csv).
   static const int _firmwareCheckPacketWindow = 20;
@@ -240,6 +283,8 @@ class SessionRecorder extends ChangeNotifier {
   IOSink? _eventsSink;
   IOSink? _imuSink;
   bool _imuFileCreated = false;
+  IOSink? _gpsSink;
+  bool _gpsFileCreated = false;
   final Stopwatch _stopwatch = Stopwatch();
   Timer? _flushTimer;
 
@@ -269,6 +314,12 @@ class SessionRecorder extends ChangeNotifier {
   int _imuSampleCount = 0;
   int _imuMissingSamples = 0;
 
+  final GpsSeqTracker _gpsSeqTracker = GpsSeqTracker();
+  int _gpsBlockCount = 0;
+  int _gpsLostOrSkippedBlocks = 0;
+  GpsBlock? _lastGpsBlock;
+  GpsLinkState? _lastLoggedGpsLinkState;
+
   int get packetCount => _packetCount;
   int get lostCount => _lostCount;
   int get decodeErrorCount => _decodeErrorCount;
@@ -280,6 +331,11 @@ class SessionRecorder extends ChangeNotifier {
   int get imuBlockCount => _imuBlockCount;
   int get imuSampleCount => _imuSampleCount;
   int get imuMissingSamples => _imuMissingSamples;
+  int get gpsBlockCount => _gpsBlockCount;
+  int get gpsLostOrSkippedBlocks => _gpsLostOrSkippedBlocks;
+
+  /// The most recent GPS block of this session, for the live display.
+  GpsBlock? get lastGpsBlock => _lastGpsBlock;
 
   /// True once [_firmwareCheckPacketWindow] telemetry packets have all been
   /// version 2 while the MTU did not by itself explain it -- surfaced so the
@@ -296,6 +352,12 @@ class SessionRecorder extends ChangeNotifier {
     final total = _imuSampleCount + _imuMissingSamples;
     if (total <= 0) return 0.0;
     return (_imuMissingSamples / total) * 100.0;
+  }
+
+  double get gpsLostOrSkippedPercent {
+    final total = _gpsBlockCount + _gpsLostOrSkippedBlocks;
+    if (total <= 0) return 0.0;
+    return (_gpsLostOrSkippedBlocks / total) * 100.0;
   }
 
   /// Starts a new recording session: creates
@@ -345,6 +407,13 @@ class SessionRecorder extends ChangeNotifier {
     _imuMissingSamples = 0;
     _imuFileCreated = false;
     _imuSink = null;
+    _gpsSeqTracker.reset();
+    _gpsBlockCount = 0;
+    _gpsLostOrSkippedBlocks = 0;
+    _lastGpsBlock = null;
+    _lastLoggedGpsLinkState = null;
+    _gpsFileCreated = false;
+    _gpsSink = null;
 
     await File('${dir.path}/meta.json').writeAsString(_prettyJson(finalMeta.toJson()));
 
@@ -576,6 +645,93 @@ class SessionRecorder extends ChangeNotifier {
     _imuFileCreated = true;
   }
 
+  /// Feeds one raw GPS block notification payload into the recorder (D-060).
+  /// No-op if not currently recording. A block that fails to decode is
+  /// counted as a decode error (`decode_error` with a `gps:`-prefixed detail)
+  /// and otherwise dropped. `gps.csv` is created lazily on the first block
+  /// that decodes, so a session without GPS has none.
+  void handleRawGpsBlock(Uint8List bytes) {
+    if (!isRecording) return;
+
+    final rxUtc = DateTime.now().toUtc();
+    final rxMonoMs = _stopwatch.elapsedMilliseconds;
+
+    GpsBlock block;
+    try {
+      block = GpsBlock.decode(bytes);
+    } catch (e) {
+      _decodeErrorCount++;
+      _logEvent('decode_error', 'gps: $e', rxUtc: rxUtc, rxMonoMs: rxMonoMs);
+      notifyListeners();
+      return;
+    }
+
+    final missing = _gpsSeqTracker.missingBlocksFor(block);
+    _gpsBlockCount++;
+    _gpsLostOrSkippedBlocks += missing;
+    _lastGpsBlock = block;
+
+    _ensureGpsSinkOpen();
+    _gpsSink?.writeln(_csvRow([
+      rxUtc.toIso8601String(),
+      rxMonoMs.toString(),
+      block.seq.toString(),
+      missing.toString(),
+      _bytesToHex(bytes),
+      block.deviceTimeMs.toString(),
+      block.groundSpeed.toString(),
+      block.headingOfMotion.toString(),
+      block.speedAccuracy.toString(),
+      block.headingAccuracy.toString(),
+      block.fixType.toString(),
+      block.numSv.toString(),
+      block.flags.toString(),
+      block.groundSpeedMps.toString(),
+      block.headingOfMotionDeg.toString(),
+      block.speedAccuracyMps.toString(),
+      block.headingAccuracyDeg.toString(),
+      block.gnssFixOk ? '1' : '0',
+      block.parseError ? '1' : '0',
+      block.uartOverflow ? '1' : '0',
+    ]));
+
+    if (missing > 0) {
+      _logEvent('gps_gap', 'missing=$missing;seq=${block.seq}', rxUtc: rxUtc, rxMonoMs: rxMonoMs);
+    }
+
+    notifyListeners();
+  }
+
+  void _ensureGpsSinkOpen() {
+    if (_gpsFileCreated) return;
+    final dir = _sessionDir;
+    if (dir == null) return;
+    _gpsSink = File('${dir.path}/gps.csv').openWrite();
+    _gpsSink!.writeln(_csvRow(gpsCsvHeader));
+    _gpsFileCreated = true;
+  }
+
+  /// Feeds the `gps` subscription state of the BLE link into the recorder
+  /// (D-062). No-op if not currently recording. Logs `gps_subscribed` and
+  /// `gps_subscribe_failed` (`detail=reason=<redacted error>`) when the state
+  /// changes to one of them; the other states are not logged.
+  void handleGpsLinkStatus(GpsLinkStatus status) {
+    if (!isRecording) return;
+    if (status.state == _lastLoggedGpsLinkState) return;
+    switch (status.state) {
+      case GpsLinkState.subscribed:
+        _logEvent('gps_subscribed', '');
+      case GpsLinkState.failed:
+        _logEvent('gps_subscribe_failed', 'reason=${redactDeviceIds(status.reason ?? 'unknown')}');
+      case GpsLinkState.disconnected:
+      case GpsLinkState.notOffered:
+      case GpsLinkState.subscribing:
+        break;
+    }
+    _lastLoggedGpsLinkState = status.state;
+    notifyListeners();
+  }
+
   /// Feeds a negotiated-MTU change into the recorder. No-op if not currently
   /// recording. Also used by the `firmware_update_recommended` heuristic.
   void handleMtuNegotiated(int mtu) {
@@ -623,9 +779,11 @@ class SessionRecorder extends ChangeNotifier {
     await _telemetrySink?.close();
     await _eventsSink?.close();
     await _imuSink?.close();
+    await _gpsSink?.close();
     _telemetrySink = null;
     _eventsSink = null;
     _imuSink = null;
+    _gpsSink = null;
 
     final summary = SessionSummary(
       duration: _stopwatch.elapsed,
@@ -641,6 +799,9 @@ class SessionRecorder extends ChangeNotifier {
       imuSampleCount: _imuSampleCount,
       imuMissingSamples: _imuMissingSamples,
       imuLossPercent: imuLossPercent,
+      gpsBlockCount: _gpsBlockCount,
+      gpsLostOrSkippedBlocks: _gpsLostOrSkippedBlocks,
+      gpsLostOrSkippedPercent: gpsLostOrSkippedPercent,
       mtu: _currentMtu,
     );
 
@@ -659,6 +820,7 @@ class SessionRecorder extends ChangeNotifier {
       await _telemetrySink?.flush();
       await _eventsSink?.flush();
       await _imuSink?.flush();
+      await _gpsSink?.flush();
     } catch (e) {
       debugPrint('SessionRecorder flush error: $e');
     }

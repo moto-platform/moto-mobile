@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../models/gps_block.dart';
 import '../models/session_meta.dart';
 import '../services/app_settings.dart';
 import '../services/ble_service.dart';
@@ -40,6 +41,8 @@ class _RecordScreenState extends State<RecordScreen> {
 
   StreamSubscription<Uint8List>? _packetSub;
   StreamSubscription<Uint8List>? _imuPacketSub;
+  StreamSubscription<Uint8List>? _gpsPacketSub;
+  StreamSubscription<GpsLinkStatus>? _gpsLinkSub;
   StreamSubscription<int>? _mtuSub;
   StreamSubscription<bool>? _connSub;
   Timer? _tickTimer;
@@ -75,6 +78,11 @@ class _RecordScreenState extends State<RecordScreen> {
 
     _packetSub = widget.bleService.rawPacketStream.listen(_recorder.handleRawPacket);
     _imuPacketSub = widget.bleService.rawImuBlockStream.listen(_recorder.handleRawImuBlock);
+    _gpsPacketSub = widget.bleService.rawGpsBlockStream.listen(_recorder.handleRawGpsBlock);
+    _gpsLinkSub = widget.bleService.gpsLinkStream.listen((status) {
+      _recorder.handleGpsLinkStatus(status);
+      if (mounted) setState(() {});
+    });
     _mtuSub = widget.bleService.mtuStream.listen(_recorder.handleMtuNegotiated);
     _connSub = widget.bleService.connectionStream.listen((connected) {
       _recorder.handleConnectionChange(connected);
@@ -100,6 +108,8 @@ class _RecordScreenState extends State<RecordScreen> {
   void dispose() {
     _packetSub?.cancel();
     _imuPacketSub?.cancel();
+    _gpsPacketSub?.cancel();
+    _gpsLinkSub?.cancel();
     _mtuSub?.cancel();
     _connSub?.cancel();
     _tickTimer?.cancel();
@@ -197,6 +207,8 @@ class _RecordScreenState extends State<RecordScreen> {
   Future<void> _startRecording() async {
     final meta = _buildMetaFromForm();
     final finalMeta = await _recorder.start(meta);
+    // The GPS subscription may have settled before this recording started.
+    _recorder.handleGpsLinkStatus(widget.bleService.gpsLinkStatus);
     await _saveLastUsedMeta(finalMeta);
     await WakelockPlus.enable();
     if (mounted) setState(() {});
@@ -444,6 +456,33 @@ class _RecordScreenState extends State<RecordScreen> {
     );
   }
 
+  /// Display only: the GPS fix of the last block and the subscription state
+  /// (D-062: the `gps` characteristic needs a bonded link).
+  Widget _buildGpsLine() {
+    final block = _recorder.lastGpsBlock;
+    final link = widget.bleService.gpsLinkStatus;
+    if (link.state == GpsLinkState.failed) {
+      return const Text(
+        'GPS: not subscribed -- pair the phone with the bike (bonded link required); '
+        'it is retried on the next connection',
+        style: TextStyle(color: Colors.orange),
+      );
+    }
+    if (block == null) {
+      final label = switch (link.state) {
+        GpsLinkState.subscribing => 'GPS: pairing / subscribing...',
+        GpsLinkState.subscribed => 'GPS: subscribed, waiting for data',
+        GpsLinkState.notOffered => 'GPS: not offered by the firmware',
+        GpsLinkState.disconnected || GpsLinkState.failed => 'GPS: -',
+      };
+      return Text(label);
+    }
+    final kmh = (block.groundSpeedMps * 3.6).toStringAsFixed(1);
+    return Text('GPS: ${block.fixTypeLabel}${block.gnssFixOk ? '' : ' (not OK)'}   '
+        'Sats: ${block.numSv}   $kmh km/h   '
+        'Lost/skipped: ${_recorder.gpsLostOrSkippedBlocks}');
+  }
+
   Widget _buildLiveCounters(int? lastAgeMs) {
     final ageColor = (lastAgeMs != null && lastAgeMs > 1000) ? Colors.red : Colors.greenAccent;
     return Card(
@@ -461,6 +500,7 @@ class _RecordScreenState extends State<RecordScreen> {
             if (_recorder.imuBlockCount > 0 || _recorder.imuMissingSamples > 0)
               Text('IMU samples: ${_recorder.imuSampleCount}   Missing: ${_recorder.imuMissingSamples}   '
                   'MTU: ${_recorder.currentMtu ?? '-'}'),
+            _buildGpsLine(),
             if (_recorder.firmwareUpdateRecommended)
               Padding(
                 padding: const EdgeInsets.only(top: 6),

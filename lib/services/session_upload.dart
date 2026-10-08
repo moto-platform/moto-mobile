@@ -47,14 +47,16 @@ class SessionUploadStatus {
 }
 
 /// The session files that make up the upload archive, in a fixed order at
-/// the zip root. `imu.csv` is only included when present (older sessions,
-/// or sessions where no IMU block ever arrived, do not have one).
+/// the zip root. `imu.csv` and `gps.csv` are only included when present
+/// (older sessions, or sessions where no IMU / GPS block ever arrived, do not
+/// have them).
 const List<String> sessionArchiveFileNames = [
   'meta.json',
   'telemetry.csv',
   'events.csv',
   'summary.json',
   'imu.csv',
+  'gps.csv',
 ];
 
 /// Builds the store-only-or-deflated zip archive for one session directory,
