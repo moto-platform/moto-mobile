@@ -47,9 +47,10 @@ class SessionUploadStatus {
 }
 
 /// The session files that make up the upload archive, in a fixed order at
-/// the zip root. `imu.csv` and `gps.csv` are only included when present
-/// (older sessions, or sessions where no IMU / GPS block ever arrived, do not
-/// have them).
+/// the zip root. `imu.csv`, `gps.csv` and `signals.csv` are only included when
+/// present (older sessions, or sessions where no IMU / GPS / vehicle-signal
+/// block ever arrived, do not have them). `signals.csv` holds engine data only
+/// (no position), so the D-063 local-only rule for `gps.csv` does not apply.
 const List<String> sessionArchiveFileNames = [
   'meta.json',
   'telemetry.csv',
@@ -57,6 +58,7 @@ const List<String> sessionArchiveFileNames = [
   'summary.json',
   'imu.csv',
   'gps.csv',
+  'signals.csv',
 ];
 
 /// Builds the store-only-or-deflated zip archive for one session directory,

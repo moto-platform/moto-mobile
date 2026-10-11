@@ -57,6 +57,7 @@ class _RecordScreenState extends State<RecordScreen> {
   StreamSubscription<Uint8List>? _packetSub;
   StreamSubscription<Uint8List>? _imuPacketSub;
   StreamSubscription<Uint8List>? _gpsPacketSub;
+  StreamSubscription<Uint8List>? _vehicleSignalPacketSub;
   StreamSubscription<GpsLinkStatus>? _gpsLinkSub;
   StreamSubscription<int>? _mtuSub;
   StreamSubscription<bool>? _connSub;
@@ -96,6 +97,8 @@ class _RecordScreenState extends State<RecordScreen> {
     _packetSub = widget.bleService.rawPacketStream.listen(_recorder.handleRawPacket);
     _imuPacketSub = widget.bleService.rawImuBlockStream.listen(_recorder.handleRawImuBlock);
     _gpsPacketSub = widget.bleService.rawGpsBlockStream.listen(_recorder.handleRawGpsBlock);
+    _vehicleSignalPacketSub =
+        widget.bleService.rawVehicleSignalBlockStream.listen(_recorder.handleRawVehicleSignalBlock);
     _gpsLinkSub = widget.bleService.gpsLinkStream.listen((status) {
       _recorder.handleGpsLinkStatus(status);
       if (mounted) setState(() {});
@@ -126,6 +129,7 @@ class _RecordScreenState extends State<RecordScreen> {
     _packetSub?.cancel();
     _imuPacketSub?.cancel();
     _gpsPacketSub?.cancel();
+    _vehicleSignalPacketSub?.cancel();
     _gpsLinkSub?.cancel();
     _mtuSub?.cancel();
     _connSub?.cancel();

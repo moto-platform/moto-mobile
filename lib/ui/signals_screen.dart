@@ -163,11 +163,16 @@ class _SignalRow extends StatelessWidget {
     final valueColor = live ? t.textPrimary : stateColor(context, view.state);
     final signal = view.signal;
     final String detail;
-    if (!signal.isPolled) {
-      detail = 'Not polled';
-    } else {
+    if (signal.isPolled) {
       final poll = 'Poll every ${signal.pollPeriodMs} ms';
       detail = view.ageMs == null ? poll : 'Age ${formatAge(view.ageMs)} · $poll';
+    } else if (view.state == SignalState.notPolled) {
+      detail = 'Not polled';
+    } else {
+      // A catalog candidate the node reports anyway (promoted in newer
+      // firmware): there is no poll period in this app's catalog.
+      const reported = 'Reported by the node';
+      detail = view.ageMs == null ? reported : 'Age ${formatAge(view.ageMs)} · $reported';
     }
     return Container(
       padding: const EdgeInsets.all(Spacing.md),
@@ -216,7 +221,7 @@ class _SignalRow extends StatelessWidget {
             runSpacing: Spacing.xs,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              StateChip(view.state),
+              StateChip(view.state, nrc: view.nrc),
               Text(detail, style: theme.textTheme.bodySmall),
             ],
           ),

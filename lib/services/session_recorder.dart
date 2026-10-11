@@ -11,6 +11,7 @@ import '../models/gps_block.dart';
 import '../models/imu_block.dart';
 import '../models/session_meta.dart';
 import '../models/telemetry_data.dart';
+import '../models/vehicle_signal_block.dart';
 
 /// Provides the platform's app-documents directory. Overridden in tests so
 /// [SessionRecorder] never touches a real device path_provider channel.
@@ -54,6 +55,14 @@ class SessionSummary {
   final int gpsLostOrSkippedBlocks;
   final double gpsLostOrSkippedPercent;
 
+  /// Vehicle-signal blocks and records recorded, and blocks lost from `seq`
+  /// gaps (D-066 item 4; the sender never skips a block, so unlike GPS this is
+  /// a radio-loss figure).
+  final int vehicleSignalBlockCount;
+  final int vehicleSignalRecordCount;
+  final int vehicleSignalLostBlocks;
+  final double vehicleSignalLostPercent;
+
   /// Last negotiated ATT MTU, or `null` if never reported this session.
   final int? mtu;
 
@@ -74,6 +83,10 @@ class SessionSummary {
     this.gpsBlockCount = 0,
     this.gpsLostOrSkippedBlocks = 0,
     this.gpsLostOrSkippedPercent = 0.0,
+    this.vehicleSignalBlockCount = 0,
+    this.vehicleSignalRecordCount = 0,
+    this.vehicleSignalLostBlocks = 0,
+    this.vehicleSignalLostPercent = 0.0,
     this.mtu,
   });
 
@@ -94,6 +107,10 @@ class SessionSummary {
         'gps_block_count': gpsBlockCount,
         'gps_lost_or_skipped_blocks': gpsLostOrSkippedBlocks,
         'gps_lost_or_skipped_percent': gpsLostOrSkippedPercent,
+        'vehicle_signal_block_count': vehicleSignalBlockCount,
+        'vehicle_signal_record_count': vehicleSignalRecordCount,
+        'vehicle_signal_lost_blocks': vehicleSignalLostBlocks,
+        'vehicle_signal_lost_percent': vehicleSignalLostPercent,
         'mtu': mtu,
       };
 
@@ -116,6 +133,10 @@ class SessionSummary {
         gpsBlockCount: json['gps_block_count'] as int? ?? 0,
         gpsLostOrSkippedBlocks: json['gps_lost_or_skipped_blocks'] as int? ?? 0,
         gpsLostOrSkippedPercent: (json['gps_lost_or_skipped_percent'] as num?)?.toDouble() ?? 0.0,
+        vehicleSignalBlockCount: json['vehicle_signal_block_count'] as int? ?? 0,
+        vehicleSignalRecordCount: json['vehicle_signal_record_count'] as int? ?? 0,
+        vehicleSignalLostBlocks: json['vehicle_signal_lost_blocks'] as int? ?? 0,
+        vehicleSignalLostPercent: (json['vehicle_signal_lost_percent'] as num?)?.toDouble() ?? 0.0,
         mtu: json['mtu'] as int?,
       );
 }
@@ -123,12 +144,12 @@ class SessionSummary {
 enum SessionRecorderState { idle, recording }
 
 /// Records raw BLE telemetry, IMU and GPS notifications to a per-session
-/// directory as `meta.json`, `telemetry.csv`, `events.csv` and (when any IMU
-/// or GPS block arrives) `imu.csv` / `gps.csv`, and writes a `summary.json`
-/// on stop.
+/// directory as `meta.json`, `telemetry.csv`, `events.csv` and (when any IMU,
+/// GPS or vehicle-signal block arrives) `imu.csv` / `gps.csv` / `signals.csv`,
+/// and writes a `summary.json` on stop.
 ///
 /// Field decoding is delegated entirely to [TelemetryData.fromBinaryBuffer],
-/// [ImuBlock.decode] and [GpsBlock.decode] -- the single sources of truth for the BLE packet
+/// [ImuBlock.decode], [GpsBlock.decode] and [VehicleSignalBlock.decode] -- the single sources of truth for the BLE packet
 /// schema. This class only adds timing, sequence/gap bookkeeping and
 /// CSV/JSON formatting around them; it never re-implements offset/scale
 /// logic.
@@ -248,6 +269,27 @@ class SessionRecorder extends ChangeNotifier {
     'uart_overflow',
   ];
 
+  /// signals.csv (D-066 item 4): one row per vehicle-signal *record*. The
+  /// block header fields repeat on every row of a block; `lost_since_prev` is
+  /// non-zero on a block's first row only. `did`, `state`, `age_ms` and `raw`
+  /// are the wire values; `signal` and `value` are this app's catalog decode.
+  /// moto-server accepts exactly this header.
+  static const List<String> signalsCsvHeader = [
+    'rx_utc_iso',
+    'rx_mono_ms',
+    'block_seq',
+    'lost_since_prev',
+    'device_time_ms',
+    'total_records',
+    'first_record',
+    'did',
+    'state',
+    'age_ms',
+    'raw',
+    'signal',
+    'value',
+  ];
+
   /// The first N telemetry packets considered for the
   /// `firmware_update_recommended` heuristic (contract §events.csv).
   static const int _firmwareCheckPacketWindow = 20;
@@ -285,6 +327,8 @@ class SessionRecorder extends ChangeNotifier {
   bool _imuFileCreated = false;
   IOSink? _gpsSink;
   bool _gpsFileCreated = false;
+  IOSink? _signalsSink;
+  bool _signalsFileCreated = false;
   final Stopwatch _stopwatch = Stopwatch();
   Timer? _flushTimer;
 
@@ -320,6 +364,11 @@ class SessionRecorder extends ChangeNotifier {
   GpsBlock? _lastGpsBlock;
   GpsLinkState? _lastLoggedGpsLinkState;
 
+  final VehicleSignalSeqTracker _vehicleSignalSeqTracker = VehicleSignalSeqTracker();
+  int _vehicleSignalBlockCount = 0;
+  int _vehicleSignalRecordCount = 0;
+  int _vehicleSignalLostBlocks = 0;
+
   int get packetCount => _packetCount;
   int get lostCount => _lostCount;
   int get decodeErrorCount => _decodeErrorCount;
@@ -333,6 +382,9 @@ class SessionRecorder extends ChangeNotifier {
   int get imuMissingSamples => _imuMissingSamples;
   int get gpsBlockCount => _gpsBlockCount;
   int get gpsLostOrSkippedBlocks => _gpsLostOrSkippedBlocks;
+  int get vehicleSignalBlockCount => _vehicleSignalBlockCount;
+  int get vehicleSignalRecordCount => _vehicleSignalRecordCount;
+  int get vehicleSignalLostBlocks => _vehicleSignalLostBlocks;
 
   /// The most recent GPS block of this session, for the live display.
   GpsBlock? get lastGpsBlock => _lastGpsBlock;
@@ -358,6 +410,12 @@ class SessionRecorder extends ChangeNotifier {
     final total = _gpsBlockCount + _gpsLostOrSkippedBlocks;
     if (total <= 0) return 0.0;
     return (_gpsLostOrSkippedBlocks / total) * 100.0;
+  }
+
+  double get vehicleSignalLostPercent {
+    final total = _vehicleSignalBlockCount + _vehicleSignalLostBlocks;
+    if (total <= 0) return 0.0;
+    return (_vehicleSignalLostBlocks / total) * 100.0;
   }
 
   /// Starts a new recording session: creates
@@ -414,6 +472,12 @@ class SessionRecorder extends ChangeNotifier {
     _lastLoggedGpsLinkState = null;
     _gpsFileCreated = false;
     _gpsSink = null;
+    _vehicleSignalSeqTracker.reset();
+    _vehicleSignalBlockCount = 0;
+    _vehicleSignalRecordCount = 0;
+    _vehicleSignalLostBlocks = 0;
+    _signalsFileCreated = false;
+    _signalsSink = null;
 
     await File('${dir.path}/meta.json').writeAsString(_prettyJson(finalMeta.toJson()));
 
@@ -711,6 +775,76 @@ class SessionRecorder extends ChangeNotifier {
     _gpsFileCreated = true;
   }
 
+  /// Feeds one raw vehicle-signal block notification payload into the
+  /// recorder (D-066 item 4). No-op if not currently recording. A block that
+  /// fails to decode (wrong version, length not matching `recordCount`) is
+  /// counted as a decode error (`decode_error` with a `vsig:`-prefixed detail)
+  /// and gets no row. `signals.csv` is created lazily on the first block that
+  /// decodes, so a session whose firmware has no `vehicleSignals`
+  /// characteristic has none.
+  ///
+  /// One row per record. The wire values (`did`, `state`, `age_ms`, `raw`) are
+  /// written unchanged; `signal` and `value` are the catalog decode
+  /// ([VehicleSignalRecord.signal] / [VehicleSignalRecord.value]), empty when
+  /// the DID is unknown, the state carries no value, or the raw does not fit
+  /// the DID's length.
+  void handleRawVehicleSignalBlock(Uint8List bytes) {
+    if (!isRecording) return;
+
+    final rxUtc = DateTime.now().toUtc();
+    final rxMonoMs = _stopwatch.elapsedMilliseconds;
+
+    VehicleSignalBlock block;
+    try {
+      block = VehicleSignalBlock.decode(bytes);
+    } catch (e) {
+      _decodeErrorCount++;
+      _logEvent('decode_error', 'vsig: $e', rxUtc: rxUtc, rxMonoMs: rxMonoMs);
+      notifyListeners();
+      return;
+    }
+
+    final missing = _vehicleSignalSeqTracker.missingBlocksFor(block);
+    _vehicleSignalBlockCount++;
+    _vehicleSignalRecordCount += block.records.length;
+    _vehicleSignalLostBlocks += missing;
+
+    _ensureSignalsSinkOpen();
+    for (var i = 0; i < block.records.length; i++) {
+      final record = block.records[i];
+      _signalsSink?.writeln(_csvRow([
+        rxUtc.toIso8601String(),
+        rxMonoMs.toString(),
+        block.seq.toString(),
+        (i == 0 ? missing : 0).toString(),
+        block.deviceTimeMs.toString(),
+        block.totalRecords.toString(),
+        block.firstRecord.toString(),
+        record.did.toString(),
+        record.state.toString(),
+        record.ageMs.toString(),
+        record.raw.toString(),
+        record.signal?.name ?? '',
+        record.value?.toString() ?? '',
+      ]));
+    }
+
+    if (missing > 0) {
+      _logEvent('vsig_gap', 'missing=$missing;seq=${block.seq}', rxUtc: rxUtc, rxMonoMs: rxMonoMs);
+    }
+
+    notifyListeners();
+  }
+
+  void _ensureSignalsSinkOpen() {
+    if (_signalsFileCreated) return;
+    final dir = _sessionDir;
+    if (dir == null) return;
+    _signalsSink = File('${dir.path}/signals.csv').openWrite();
+    _signalsSink!.writeln(_csvRow(signalsCsvHeader));
+    _signalsFileCreated = true;
+  }
+
   /// Feeds the `gps` subscription state of the BLE link into the recorder
   /// (D-062). No-op if not currently recording. Logs `gps_subscribed` and
   /// `gps_subscribe_failed` (`detail=reason=<redacted error>`) when the state
@@ -780,10 +914,12 @@ class SessionRecorder extends ChangeNotifier {
     await _eventsSink?.close();
     await _imuSink?.close();
     await _gpsSink?.close();
+    await _signalsSink?.close();
     _telemetrySink = null;
     _eventsSink = null;
     _imuSink = null;
     _gpsSink = null;
+    _signalsSink = null;
 
     final summary = SessionSummary(
       duration: _stopwatch.elapsed,
@@ -802,6 +938,10 @@ class SessionRecorder extends ChangeNotifier {
       gpsBlockCount: _gpsBlockCount,
       gpsLostOrSkippedBlocks: _gpsLostOrSkippedBlocks,
       gpsLostOrSkippedPercent: gpsLostOrSkippedPercent,
+      vehicleSignalBlockCount: _vehicleSignalBlockCount,
+      vehicleSignalRecordCount: _vehicleSignalRecordCount,
+      vehicleSignalLostBlocks: _vehicleSignalLostBlocks,
+      vehicleSignalLostPercent: vehicleSignalLostPercent,
       mtu: _currentMtu,
     );
 
@@ -821,6 +961,7 @@ class SessionRecorder extends ChangeNotifier {
       await _eventsSink?.flush();
       await _imuSink?.flush();
       await _gpsSink?.flush();
+      await _signalsSink?.flush();
     } catch (e) {
       debugPrint('SessionRecorder flush error: $e');
     }

@@ -26,10 +26,13 @@ Dark, high-contrast Material 3 theme; every color and text style lives in
 - **Live:** speed, RPM, throttle, coolant and battery with their state, and a
   status strip (BLE, ECU, CAN state, latches, mock data, IMU, GPS).
 - **Signals:** every signal of the defs catalog (D-066,
-  `vehicleSignalCatalog`), grouped, with a LIVE / STALE / NO DATA / NOT POLLED
-  chip, age and poll period. Candidates stay NOT POLLED until a `/signal-change`
-  in moto-vehicle-defs promotes them after the D-059 scan; this screen is how
-  the bike shows which signals flow.
+  `vehicleSignalCatalog`), grouped, with a LIVE / STALE / SKIPPED / `NRC 0x31` /
+  NO DATA / NOT POLLED chip, age and poll period. The latest vehicle-signal
+  record per DID drives it: a signal is LIVE when its record is valid and the
+  phone received it within 2000 ms (the five telemetry-v4 signals keep their
+  100 ms v4 values while those say LIVE). Candidates stay NOT POLLED until the
+  node reports them; once a candidate is promoted in the firmware it turns LIVE
+  with no code change. This screen is how the bike shows which signals flow.
 - **Record:** session metadata, live counters, sessions and upload (unchanged
   behaviour, D-063 still applies).
 - **Diagnostics:** link, packet loss, vehicle CAN counters and the D-058 tester
@@ -44,8 +47,11 @@ dashboard is gone (the display is deferred in Phase 0).
 ## BLE telemetry packet schema
 
 The BLE notification formats decoded by `lib/models/telemetry_data.dart`
-(telemetry, versions 2, 3 and 4) and `lib/models/imu_block.dart` (the IMU
-sample block), plus the GATT UUIDs and MTU, are defined once, in
+(telemetry, versions 2, 3 and 4), `lib/models/imu_block.dart` (the IMU
+sample block), `lib/models/gps_block.dart` (the GPS block) and
+`lib/models/vehicle_signal_block.dart` (the D-066 vehicle-signal block, records
+keyed by DID, physical values through the generated catalog), plus the GATT
+UUIDs and MTU, are defined once, in
 `moto-vehicle-defs` `ble/ble_schema.json` (D-061). This repo does not copy it:
 the `external/moto-vehicle-defs` submodule provides the generated Dart path
 package `moto_defs` (`external/moto-vehicle-defs/gen/dart/moto_defs`,
@@ -62,12 +68,15 @@ change is a defs change plus a version bump, never a hand edit here.
 ## Ride session files and moto-server upload
 
 Recording a ride writes `meta.json`, `telemetry.csv`, `events.csv`,
-`summary.json` and (when the connected device sends IMU or GPS data) `imu.csv`
-and `gps.csv` to `<app documents>/sessions/<session_id>/` -- see
+`summary.json` and (when the connected device sends IMU, GPS or vehicle-signal
+data) `imu.csv`, `gps.csv` and `signals.csv` to `<app documents>/sessions/<session_id>/` -- see
 `docs/session-format.md` for the exact contract shared with `moto-server`.
 GPS is speed and heading only (D-060), and its characteristic needs the phone
 to be paired (bonded) with the bike (D-062): on Android the app starts the
-pairing on connect; telemetry and IMU work without it. Sessions can be shared locally
+pairing on connect; telemetry, IMU and the vehicle-signal characteristic work
+without it (firmware without a characteristic is simply not subscribed to).
+`signals.csv` holds engine data only, so the D-063 local-only rule is for
+`gps.csv` alone. Sessions can be shared locally
 at any time; uploading them to a configured `moto-server` is a separate,
 optional action (Settings screen sets the server URL/API token) and never
 blocks recording or sharing.

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../models/gps_block.dart';
 import '../../models/telemetry_data.dart';
+import '../../models/vehicle_signal_block.dart';
 import '../../services/ble_service.dart';
 import 'signal_view.dart';
 
@@ -28,6 +29,10 @@ class TelemetryStore extends ChangeNotifier {
   GpsBlock? _lastGpsBlock;
   DateTime? _lastGpsAt;
 
+  /// Latest vehicle-signal record per DID (never per index), with the phone
+  /// time it arrived at.
+  final Map<int, ReceivedVehicleSignal> _vehicleSignals = <int, ReceivedVehicleSignal>{};
+
   BleService? _ble;
   final List<StreamSubscription<Object?>> _subs = [];
   Timer? _tick;
@@ -43,6 +48,9 @@ class TelemetryStore extends ChangeNotifier {
   String? get deviceName => _deviceName;
   GpsLinkStatus get gpsLink => _gpsLink;
   GpsBlock? get lastGpsBlock => _lastGpsBlock;
+
+  /// Latest vehicle-signal record per DID (read-only view).
+  Map<int, ReceivedVehicleSignal> get vehicleSignals => Map.unmodifiable(_vehicleSignals);
 
   /// Time since the newest valid telemetry packet, or null if none yet.
   Duration? get sinceLastPacket {
@@ -61,6 +69,8 @@ class TelemetryStore extends ChangeNotifier {
         _data,
         connected: _connected,
         sinceLastPacket: sinceLastPacket,
+        records: _vehicleSignals,
+        now: _clock(),
       );
 
   /// Starts listening to [ble]. Call once.
@@ -74,13 +84,17 @@ class TelemetryStore extends ChangeNotifier {
     _subs.add(ble.mtuStream.listen(updateMtu));
     _subs.add(ble.gpsLinkStream.listen(updateGpsLink));
     _subs.add(ble.rawGpsBlockStream.listen(_onRawGps));
+    _subs.add(ble.rawVehicleSignalBlockStream.listen(_onRawVehicleSignals));
     _tick = Timer.periodic(const Duration(milliseconds: 500), (_) => _notify());
   }
 
   void updateConnection(bool connected, {String? deviceName}) {
     _connected = connected;
     _deviceName = connected ? deviceName : null;
-    if (!connected) _lastGpsBlock = null;
+    if (!connected) {
+      _lastGpsBlock = null;
+      _vehicleSignals.clear();
+    }
     _notify();
   }
 
@@ -112,6 +126,24 @@ class TelemetryStore extends ChangeNotifier {
     _lastGpsBlock = block;
     _lastGpsAt = at ?? _clock();
     _notify();
+  }
+
+  /// Keeps the latest record of every DID in [block], stamped with [at] (the
+  /// phone receive time).
+  void updateVehicleSignalBlock(VehicleSignalBlock block, {DateTime? at}) {
+    final received = at ?? _clock();
+    for (final record in block.records) {
+      _vehicleSignals[record.did] = ReceivedVehicleSignal(record, received);
+    }
+    _notify();
+  }
+
+  void _onRawVehicleSignals(Uint8List bytes) {
+    try {
+      updateVehicleSignalBlock(VehicleSignalBlock.decode(bytes));
+    } on VehicleSignalBlockDecodeException {
+      // Malformed block: the recorder counts these; nothing to show.
+    }
   }
 
   void _onRawGps(Uint8List bytes) {

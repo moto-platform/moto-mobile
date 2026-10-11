@@ -66,6 +66,14 @@ void main() {
       expect(names.contains('gps.csv'), isTrue);
     });
 
+    test('includes signals.csv when present', () async {
+      await File('${sessionDir.path}/signals.csv').writeAsString('a,b\n1,2\n');
+      final bytes = await buildSessionArchiveBytes(sessionDir);
+      final archive = ZipDecoder().decodeBytes(bytes);
+      final names = archive.files.map((f) => f.name).toSet();
+      expect(names.contains('signals.csv'), isTrue);
+    });
+
     test('archived file contents round-trip byte-for-byte', () async {
       final bytes = await buildSessionArchiveBytes(sessionDir);
       final archive = ZipDecoder().decodeBytes(bytes);
@@ -217,6 +225,27 @@ void main() {
       );
       expect(status.state, SessionUploadState.uploaded);
       expect(body, contains('gps.csv'));
+    });
+
+    test('a session with signals.csv (no gps.csv) uploads to a non-local server: engine data only, no D-063 block',
+        () async {
+      await File('${sessionDir.path}/signals.csv').writeAsString('a,b\n1,2\n');
+      String? body;
+      final uploader = SessionUploader(
+        documentsDirProvider: () async => tempDir,
+        uploadClient: UploadClient(httpClient: MockClient((request) async {
+          body = latin1.decode(request.bodyBytes);
+          return http.Response('', 201);
+        })),
+        networkInfo: _FixedNetworkInfo(true),
+      );
+
+      final status = await uploader.upload(
+        '20260927-120000-ab12',
+        const AppSettings(serverBaseUrl: 'https://moto.example.com', apiToken: 't'),
+      );
+      expect(status.state, SessionUploadState.uploaded);
+      expect(body, contains('signals.csv'));
     });
   });
 
