@@ -25,6 +25,7 @@ class BleService {
   StreamSubscription? _valueSubscription;
   StreamSubscription? _imuValueSubscription;
   StreamSubscription? _gpsValueSubscription;
+  StreamSubscription? _vehicleSignalsValueSubscription;
   StreamSubscription<int>? _mtuSubscription;
 
   final StreamController<TelemetryData> _telemetryStreamController = StreamController<TelemetryData>.broadcast();
@@ -47,6 +48,13 @@ class BleService {
   /// has no `gps` characteristic, so this may never emit.
   final StreamController<Uint8List> _rawGpsBlockStreamController = StreamController<Uint8List>.broadcast();
   Stream<Uint8List> get rawGpsBlockStream => _rawGpsBlockStreamController.stream;
+
+  /// Every raw vehicle-signal block notification payload, before decoding
+  /// (D-066 item 4). Old firmware has no `vehicleSignals` characteristic, so
+  /// this may never emit for such a connection -- that is not an error.
+  final StreamController<Uint8List> _rawVehicleSignalBlockStreamController =
+      StreamController<Uint8List>.broadcast();
+  Stream<Uint8List> get rawVehicleSignalBlockStream => _rawVehicleSignalBlockStreamController.stream;
 
   /// The `gps` subscription state of the current connection (D-062: bonded
   /// link required). The latest value is also kept in [gpsLinkStatus].
@@ -125,6 +133,7 @@ class BleService {
                 _valueSubscription?.cancel();
                 _imuValueSubscription?.cancel();
                 _gpsValueSubscription?.cancel();
+                _vehicleSignalsValueSubscription?.cancel();
                 _mtuSubscription?.cancel();
                 _setGpsLink(GpsLinkStatus.disconnected);
               }
@@ -193,6 +202,26 @@ class BleService {
                     });
 
                     await characteristic.setNotifyValue(true);
+                  }
+                  if (characteristic.uuid.toString().toLowerCase() == BleGatt.vehicleSignalsCharacteristicUuid.toLowerCase()) {
+                    // No bonding needed (like telemetry and IMU). Old firmware
+                    // lacks the characteristic and never reaches this branch;
+                    // a subscribe failure must not affect the other streams.
+                    try {
+                      await _vehicleSignalsValueSubscription?.cancel();
+                      _vehicleSignalsValueSubscription = characteristic.lastValueStream.listen((value) {
+                        if (value.isNotEmpty) {
+                          _rawVehicleSignalBlockStreamController.add(Uint8List.fromList(value));
+                        }
+                      }, onError: (err) {
+                        debugPrint("BLE vehicle-signals value stream error: ${redactDeviceIds('$err')}");
+                      });
+                      await characteristic.setNotifyValue(true);
+                    } catch (e) {
+                      await _vehicleSignalsValueSubscription?.cancel();
+                      _vehicleSignalsValueSubscription = null;
+                      debugPrint("BLE vehicle-signals subscribe failed: ${redactDeviceIds('$e')}");
+                    }
                   }
                   if (characteristic.uuid.toString().toLowerCase() == BleGatt.gpsCharacteristicUuid.toLowerCase()) {
                     gpsCharacteristic = characteristic;
@@ -279,6 +308,7 @@ class BleService {
     await _valueSubscription?.cancel();
     await _imuValueSubscription?.cancel();
     await _gpsValueSubscription?.cancel();
+    await _vehicleSignalsValueSubscription?.cancel();
     await _mtuSubscription?.cancel();
     await _deviceStateSubscription?.cancel();
     if (_targetDevice != null) {

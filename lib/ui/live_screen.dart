@@ -213,7 +213,7 @@ class _HeroTile extends StatelessWidget {
           Row(
             children: [
               Expanded(child: Text(view.label.toUpperCase(), style: theme.textTheme.labelSmall)),
-              StateChip(view.state),
+              StateChip(view.state, nrc: view.nrc),
             ],
           ),
           const SizedBox(height: Spacing.md),

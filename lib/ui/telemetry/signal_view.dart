@@ -1,6 +1,7 @@
 import 'package:moto_defs/moto_defs.dart';
 
 import '../../models/telemetry_data.dart';
+import '../../models/vehicle_signal_block.dart';
 import 'link_status.dart';
 
 // Signal view-model layer. Pure Dart (no Flutter imports) so it is unit
@@ -11,7 +12,14 @@ import 'link_status.dart';
 // hand-maintained piece is the binding of the five *polled* catalog signals
 // to the fields of the BLE telemetry packet ([TelemetryData]), keyed by the
 // generated [VehicleSignalNames] constants. Every other catalog entry is a
-// candidate: not polled, so it never carries a value.
+// candidate: not polled, so without a record it never carries a value.
+//
+// The vehicle-signal block (D-066 item 4) adds a second, generic source: the
+// latest record per DID, with the phone time it arrived at. A catalog signal
+// with a record is LIVE / STALE / SKIPPED / NRC from that record, whether it
+// is polled or a candidate (so a candidate promoted in the firmware turns LIVE
+// with no code change). For the five telemetry-v4 signals the v4 packet
+// (100 ms) stays the primary source and wins while it says LIVE.
 
 /// Display state of one catalog signal.
 enum SignalState {
@@ -25,8 +33,17 @@ enum SignalState {
   /// a version 2 packet that carries no per-signal ages).
   noData,
 
-  /// Catalog candidate: not in the tester's poll table, never has a value.
+  /// Catalog candidate: not in the tester's poll table and no vehicle-signal
+  /// record for it, so it has no value.
   notPolled,
+
+  /// The sender skips this DID after repeated timeouts (vehicle-signal record
+  /// state skipped).
+  skipped,
+
+  /// The DID's last answer was a negative response (vehicle-signal record
+  /// state negativeResponse); [SignalView.nrc] holds the code.
+  negativeResponse,
 }
 
 /// A polled signal reads its value, validity bit and age from the packet.
@@ -91,6 +108,10 @@ const String noValueText = '--';
 /// shown as stale (the link went quiet without a disconnect event).
 const Duration linkStaleAfter = Duration(milliseconds: 2000);
 
+/// A vehicle-signal record is LIVE only if its state is valid and the phone
+/// received it at most this long ago; an older record is shown as stale.
+const Duration vehicleSignalLiveWithin = Duration(milliseconds: 2000);
+
 /// Unit text for display. The catalog stores ASCII units (`degC`); this only
 /// renders them (the degree sign), it does not define units.
 String displayUnit(String unit) => switch (unit) {
@@ -98,6 +119,20 @@ String displayUnit(String unit) => switch (unit) {
       'deg' => '°',
       _ => unit,
     };
+
+/// Fraction digits for a value decoded from a vehicle-signal record: the
+/// fewest (0..3) that show the catalog step `factorNum / factorDen` exactly,
+/// else 1 (e.g. 100/255 percent).
+int vehicleSignalDecimals(VehicleSignal signal) {
+  final step = signal.factorNum / signal.factorDen;
+  var scale = 1.0;
+  for (var d = 0; d <= 3; d++) {
+    final scaled = step * scale;
+    if ((scaled - scaled.roundToDouble()).abs() < 1e-9) return d;
+    scale *= 10;
+  }
+  return 1;
+}
 
 /// `ENGINE`-style group id -> `Engine` for headers.
 String groupTitle(String group) =>
@@ -111,6 +146,7 @@ class SignalView {
     required this.value,
     required this.state,
     required this.ageMs,
+    this.nrc,
   });
 
   final VehicleSignal signal;
@@ -122,8 +158,12 @@ class SignalView {
   final double? value;
   final SignalState state;
 
-  /// Age of the value in ms as reported by the node (version 3 and 4 packets).
+  /// Age of the value in ms as reported by the node (version 3 and 4 packets,
+  /// or a vehicle-signal record plus the time since the phone received it).
   final int? ageMs;
+
+  /// The negative response code, only for [SignalState.negativeResponse].
+  final int? nrc;
 
   String get label => signal.label;
   String get unitText => displayUnit(signal.unit);
@@ -166,16 +206,22 @@ class SignalSnapshot {
   ///   data.
   /// * [sinceLastPacket]: time since the newest valid packet arrived; when it
   ///   exceeds [linkStaleAfter], values that were live become stale.
+  /// * [records]: the latest vehicle-signal record per DID with the phone time
+  ///   it arrived at (ignored while not [connected]); see [_fromRecord].
+  /// * [now]: the current time, to age the records (defaults to the wall clock).
   factory SignalSnapshot.from(
     TelemetryData data, {
     required bool connected,
     Duration? sinceLastPacket,
+    Map<int, ReceivedVehicleSignal> records = const {},
+    DateTime? now,
   }) {
     final hasPacket = data.packetVersion != 0;
     final linkQuiet = sinceLastPacket != null && sinceLastPacket > linkStaleAfter;
     final hasAges = data.packetVersion >= TelemetryVersion.v3;
+    final at = now ?? DateTime.now();
 
-    SignalView build(VehicleSignal signal) {
+    SignalView fromPacket(VehicleSignal signal) {
       if (!signal.isPolled) {
         return SignalView(
           signal: signal,
@@ -226,7 +272,62 @@ class SignalSnapshot {
       );
     }
 
+    SignalView build(VehicleSignal signal) {
+      final fromV4 = fromPacket(signal);
+      // The v4 packet is the faster source for its five signals: while it
+      // says LIVE it wins.
+      if (fromV4.isLive) return fromV4;
+      final received = connected ? records[signal.did] : null;
+      if (received == null) return fromV4;
+      return _fromRecord(signal, received, at) ?? fromV4;
+    }
+
     return SignalSnapshot._(List<SignalView>.unmodifiable(vehicleSignalCatalog.map(build)));
+  }
+
+  /// One catalog signal from its latest vehicle-signal record, or `null` when
+  /// the record says nothing (state neverReceived on a polled signal: the
+  /// packet-derived view stands).
+  ///
+  /// LIVE: state valid, a decodable value (raw fits the DID length) and the
+  /// phone received the record at most [vehicleSignalLiveWithin] ago. STALE:
+  /// state stale, or a valid record older than that. A valid record whose raw
+  /// does not fit the DID length is malformed: NO DATA.
+  static SignalView? _fromRecord(VehicleSignal signal, ReceivedVehicleSignal received, DateTime now) {
+    final record = received.record;
+    final since = now.difference(received.receivedAt);
+    final wireAge = record.knownAgeMs;
+    final age = wireAge == null ? null : wireAge + since.inMilliseconds;
+
+    SignalView view(SignalState state, {double? value, int? nrc}) => SignalView(
+          signal: signal,
+          valueText: value == null ? noValueText : value.toStringAsFixed(vehicleSignalDecimals(signal)),
+          value: value,
+          state: state,
+          ageMs: age,
+          nrc: nrc,
+        );
+
+    switch (record.state) {
+      case BleVehicleSignalState.valid:
+        final value = record.value;
+        if (value == null) return view(SignalState.noData);
+        if (since > vehicleSignalLiveWithin) return view(SignalState.stale);
+        return view(SignalState.live, value: value);
+      case BleVehicleSignalState.stale:
+        return view(SignalState.stale);
+      case BleVehicleSignalState.skipped:
+        return view(SignalState.skipped);
+      case BleVehicleSignalState.negativeResponse:
+        return view(SignalState.negativeResponse, nrc: record.nrc);
+      case BleVehicleSignalState.neverReceived:
+        // The node has this DID in its table but no answer yet. A polled
+        // signal keeps its packet-derived view; a candidate the node polls
+        // anyway is "no data" rather than "not polled".
+        return signal.isPolled ? null : view(SignalState.noData);
+      default:
+        return null;
+    }
   }
 
   /// Snapshot with no connection and no data.

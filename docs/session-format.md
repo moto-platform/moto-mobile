@@ -8,8 +8,8 @@ against the same contract independently -- if you change anything here,
 change it on both sides together.
 
 The BLE packet layouts referenced throughout (telemetry versions 2, 3 and 4,
-the IMU block and the GPS block) have exactly one source of truth: `ble/ble_schema.json` in
-`moto-vehicle-defs` (D-061). This repo takes it through the
+the IMU block, the GPS block and the vehicle-signal block) have exactly one
+source of truth: `ble/ble_schema.json` in `moto-vehicle-defs` (D-061). This repo takes it through the
 `external/moto-vehicle-defs` submodule and the generated Dart package
 `moto_defs` (`package:moto_defs/moto_defs.dart`, a path dependency); there is
 no copy of the schema and no drift test here. Never hand-invent a field name,
@@ -36,6 +36,9 @@ New keys (D-032):
   decodes.
 - `gps_block_version` (int, `1`, D-060) -- the GPS block schema version this
   app decodes (absent in sessions from earlier app builds).
+- `vehicle_signal_block_version` (int, `1`, D-066 item 4) -- the vehicle-signal
+  block schema version this app decodes (absent in sessions from earlier app
+  builds).
 - `requested_mtu` (int, `185`) -- the ATT MTU this app requests right after
   connecting (the schema's `gatt.mtu.requested`, generated as
   `BleGatt.requestedMtu`), regardless of what was actually
@@ -195,6 +198,51 @@ the route's shape by dead reckoning. A session with `gps.csv` goes only to
 the user's own local moto-server (Phase 0 runs it on the laptop), never to a
 server that is not local, and real sessions are never committed (D-033).
 
+## signals.csv (optional, D-066 item 4)
+
+Every DID of the vehicle-bus tester's table, from the schema's `vehicleSignalBlock`
+(notified on the `vehicleSignals` characteristic, at most 3 blocks per 200 ms, records keyed
+by DID). A DID promoted from the candidate catalog (D-066 item 3) shows up here with no change
+to this contract: the receiver decodes every record through the generated vehicle catalog
+(`vehicle_signals.dart` / `vehicle_catalog.py`, D-066 item 2).
+
+Created lazily, the first time a vehicle-signal block decodes successfully -- a session whose
+firmware has no `vehicleSignals` characteristic has no `signals.csv`. One row per **record**
+(not per block):
+
+```
+rx_utc_iso,rx_mono_ms,block_seq,lost_since_prev,device_time_ms,total_records,first_record,
+did,state,age_ms,raw,signal,value
+```
+
+- `rx_utc_iso` / `rx_mono_ms`: phone receive time of the *block*, repeated for every record.
+- `block_seq`, `device_time_ms`, `total_records`, `first_record`: the block header fields.
+  `lost_since_prev` = `(seq - prev.seq - 1) mod 256` (schema `sequenceRule`), written on the
+  first row of each block only (0 on the other rows and for the first block of the session).
+- `did`, `state`, `age_ms`, `raw` are the record's wire values and are authoritative:
+  - `did`: the DID as a decimal integer (e.g. `62476` for 0xF40C).
+  - `state`: the integer state (`BleVehicleSignalState`: 0 neverReceived, 1 valid, 2 stale,
+    3 skipped, 4 negativeResponse).
+  - `age_ms`: the wire age, sentinels included (`65535` = no positive answer since boot,
+    `65534` = saturated); like `telemetry.csv`'s `rtt_*` columns it holds the raw wire value.
+  - `raw`: the 32-bit raw field as a decimal integer: the data bytes as an unsigned big-endian
+    number for state 1 and 2, the NRC for state 4, 0 otherwise.
+- `signal` and `value` are this app's catalog decode, a convenience that moto-server
+  recomputes from `did` + `raw` with its own generated catalog (and only uses as a
+  consistency check):
+  - `signal`: the catalog name (e.g. `ENGINE_SPEED`), empty for a DID that is not in the
+    app's catalog (firmware built from a newer defs).
+  - `value`: `raw * factor_num / factor_den + offset` in the catalog unit, only for state 1
+    or 2 and a known DID whose raw fits its `length` (raw <= 2^(8*length) - 1); empty
+    otherwise. Written with `toString()` of the double (no rounding).
+- A block that fails to decode (wrong version, length that does not match `recordCount`)
+  gets no row; it is a `decode_error` event with the detail prefixed `vsig:`.
+
+moto-server must accept exactly this header for `signals.csv` (reject any other header, like
+`gps.csv`), re-decode `value` from `did` + `raw` via `moto_defs.vehicle_catalog`, keep rows of
+unknown DIDs with an empty value, and expose the decoded signals in its outputs alongside the
+telemetry signals.
+
 ## events.csv (unchanged header)
 
 ```
@@ -235,6 +283,12 @@ New events (D-060, D-062):
   replaced with `<device>` / `<id>` (D-033).
 - `decode_error` with the detail prefixed `gps:` for a bad GPS block.
 
+New events (D-066 item 4):
+- `vsig_gap` -- `detail=missing=<n>;seq=<s>`, whenever a vehicle-signal block's
+  `lost_since_prev` is greater than 0.
+- `decode_error` with the detail prefixed `vsig:` for a bad vehicle-signal
+  block.
+
 ## summary.json (written on stop)
 
 Existing keys: `duration_ms`, `packet_count`, `lost_count`, `loss_percent`,
@@ -255,12 +309,19 @@ New keys (D-060):
   no GPS block arrived); "lost or skipped" as in `gps.csv`'s
   `lost_since_prev`.
 
+New keys (D-066 item 4):
+- `vehicle_signal_block_count`, `vehicle_signal_record_count`,
+  `vehicle_signal_lost_blocks`, `vehicle_signal_lost_percent` (0 / `0.0` when
+  no block arrived; percent = lost / (count + lost) * 100).
+
 ## Upload to moto-server
 
 - `POST {baseUrl}/sessions`, `multipart/form-data`, field name `archive`,
   filename `<session_id>.zip`, header `Authorization: Bearer <token>`.
 - The archive contains, at its root: `meta.json`, `telemetry.csv`,
-  `events.csv`, `summary.json`, and `imu.csv` / `gps.csv` if present. It never contains
+  `events.csv`, `summary.json`, and `imu.csv` / `gps.csv` / `signals.csv` if
+  present. `signals.csv` holds engine data only (no position), so the D-063
+  local-only rule for `gps.csv` does not apply to it. It never contains
   `upload.json` (see below) -- that is app-local bookkeeping, not session
   data.
 - Responses: `201` created, `200` already uploaded (idempotent, treated as

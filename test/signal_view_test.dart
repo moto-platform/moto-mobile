@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:moto_defs/moto_defs.dart';
 import 'package:moto_mobile/models/gps_block.dart';
 import 'package:moto_mobile/models/telemetry_data.dart';
+import 'package:moto_mobile/models/vehicle_signal_block.dart';
 import 'package:moto_mobile/ui/telemetry/link_status.dart';
 import 'package:moto_mobile/ui/telemetry/signal_view.dart';
 
@@ -46,6 +47,38 @@ TelemetryData packet({
 }
 
 SignalView view(SignalSnapshot s, String name) => s.byName(name)!;
+
+final DateTime t0 = DateTime.utc(2026, 10, 11, 12);
+
+/// The latest record of [did] received [ago] before [t0].
+ReceivedVehicleSignal received(
+  int did,
+  int state, {
+  int raw = 0,
+  int wireAge = 0,
+  Duration ago = Duration.zero,
+}) =>
+    ReceivedVehicleSignal(
+      VehicleSignalRecord(did: did, state: state, ageMs: wireAge, raw: raw),
+      t0.subtract(ago),
+    );
+
+/// A snapshot at [t0] with the v4 [packet] (or none) and the given records.
+SignalSnapshot snapshotWith(
+  List<ReceivedVehicleSignal> records, {
+  TelemetryData? data,
+  bool connected = true,
+}) =>
+    SignalSnapshot.from(
+      data ?? TelemetryData.initial(),
+      connected: connected,
+      records: {for (final r in records) r.record.did: r},
+      now: t0,
+    );
+
+VehicleSignal firstCandidate() => vehicleSignalCatalog.firstWhere((s) => !s.isPolled);
+
+VehicleSignal byNameCatalog(String name) => vehicleSignalCatalog.firstWhere((s) => s.name == name);
 
 void main() {
   group('catalog coverage', () {
@@ -167,6 +200,160 @@ void main() {
           expect(v.ageMs, isNull);
         }
       }
+    });
+  });
+
+  group('vehicle-signal records', () {
+    final candidate = firstCandidate();
+
+    test('a candidate that arrives valid and fresh is LIVE with its decoded value', () {
+      final raw = candidate.length == 1 ? 100 : 1000;
+      final v = view(
+        snapshotWith([received(candidate.did, BleVehicleSignalState.valid, raw: raw, wireAge: 150)]),
+        candidate.name,
+      );
+      expect(v.state, SignalState.live);
+      expect(v.isLive, isTrue);
+      expect(v.value, candidate.physical(raw));
+      expect(v.valueText, candidate.physical(raw).toStringAsFixed(vehicleSignalDecimals(candidate)));
+      expect(v.unitText, displayUnit(candidate.unit));
+      expect(v.ageMs, 150);
+      expect(v.nrc, isNull);
+    });
+
+    test('LIVE is decided by the phone receive time: 2000 ms is live, 2001 ms is stale', () {
+      SignalView at(int ms) => view(
+            snapshotWith([
+              received(candidate.did, BleVehicleSignalState.valid, raw: 1, ago: Duration(milliseconds: ms)),
+            ]),
+            candidate.name,
+          );
+      expect(at(0).state, SignalState.live);
+      expect(at(vehicleSignalLiveWithin.inMilliseconds).state, SignalState.live);
+      final stale = at(vehicleSignalLiveWithin.inMilliseconds + 1);
+      expect(stale.state, SignalState.stale);
+      expect(stale.valueText, noValueText);
+      expect(stale.value, isNull);
+      // The displayed age grows with the time since the phone got the record.
+      expect(stale.ageMs, vehicleSignalLiveWithin.inMilliseconds + 1);
+    });
+
+    test('state stale is STALE even when just received', () {
+      final v = view(
+        snapshotWith([received(candidate.did, BleVehicleSignalState.stale, raw: 1, wireAge: 5000)]),
+        candidate.name,
+      );
+      expect(v.state, SignalState.stale);
+      expect(v.valueText, noValueText);
+      expect(v.ageMs, 5000);
+    });
+
+    test('state skipped is SKIPPED', () {
+      final v = view(snapshotWith([received(candidate.did, BleVehicleSignalState.skipped)]), candidate.name);
+      expect(v.state, SignalState.skipped);
+      expect(v.isLive, isFalse);
+      expect(v.valueText, noValueText);
+    });
+
+    test('state negativeResponse carries the NRC from raw', () {
+      final v = view(
+        snapshotWith([
+          received(candidate.did, BleVehicleSignalState.negativeResponse, raw: 0x31, wireAge: BleTelemetry.ageNeverReceived),
+        ]),
+        candidate.name,
+      );
+      expect(v.state, SignalState.negativeResponse);
+      expect(v.nrc, 0x31);
+      expect(v.ageMs, isNull); // the never-received sentinel is not an age
+      expect(v.valueText, noValueText);
+    });
+
+    test('state neverReceived: a candidate is NO DATA, a polled signal keeps its packet view', () {
+      final c = view(snapshotWith([received(candidate.did, BleVehicleSignalState.neverReceived)]), candidate.name);
+      expect(c.state, SignalState.noData);
+
+      final polled = vehicleSignalCatalog.firstWhere((s) => s.isPolled);
+      final p = view(
+        snapshotWith([received(polled.did, BleVehicleSignalState.neverReceived)], data: packet()),
+        polled.name,
+      );
+      expect(p.state, SignalState.live); // from the v4 packet
+    });
+
+    test('a valid record whose raw does not fit the DID length is NO DATA, never a value', () {
+      final v = view(
+        snapshotWith([received(candidate.did, BleVehicleSignalState.valid, raw: maxRawForLength(candidate.length) + 1)]),
+        candidate.name,
+      );
+      expect(v.state, SignalState.noData);
+      expect(v.value, isNull);
+    });
+
+    test('without a record a candidate stays NOT POLLED', () {
+      final v = view(snapshotWith(const []), candidate.name);
+      expect(v.state, SignalState.notPolled);
+    });
+
+    test('records are ignored while not connected', () {
+      final v = view(
+        snapshotWith([received(candidate.did, BleVehicleSignalState.valid, raw: 1)], connected: false),
+        candidate.name,
+      );
+      expect(v.state, SignalState.notPolled);
+    });
+
+    test('a polled signal with no telemetry packet at all is LIVE from its record', () {
+      final speed = byNameCatalog(VehicleSignalNames.vehicleSpeed);
+      final v = view(snapshotWith([received(speed.did, BleVehicleSignalState.valid, raw: 55)]), speed.name);
+      expect(v.state, SignalState.live);
+      expect(v.valueText, '55');
+    });
+
+    test('the v4 packet wins while it says LIVE; otherwise the record decides', () {
+      final speed = byNameCatalog(VehicleSignalNames.vehicleSpeed);
+      // v4 says 62 and LIVE; the record says a negative response: v4 wins.
+      final v4Live = view(
+        snapshotWith([received(speed.did, BleVehicleSignalState.negativeResponse, raw: 0x31)], data: packet()),
+        speed.name,
+      );
+      expect(v4Live.state, SignalState.live);
+      expect(v4Live.valueText, '62');
+
+      // v4 says not valid (stale), the record is valid and fresh: LIVE from the record.
+      final v4Stale = view(
+        snapshotWith(
+          [received(speed.did, BleVehicleSignalState.valid, raw: 70)],
+          data: packet(speedValid: false, speedAge: 4000),
+        ),
+        speed.name,
+      );
+      expect(v4Stale.state, SignalState.live);
+      expect(v4Stale.valueText, '70');
+
+      // v4 stale and the record says skipped: SKIPPED.
+      final skipped = view(
+        snapshotWith(
+          [received(speed.did, BleVehicleSignalState.skipped)],
+          data: packet(speedValid: false, speedAge: 4000),
+        ),
+        speed.name,
+      );
+      expect(skipped.state, SignalState.skipped);
+    });
+
+    test('a record is keyed by DID: the other signals are untouched', () {
+      final s = snapshotWith([received(candidate.did, BleVehicleSignalState.valid, raw: 1)]);
+      expect(s.liveCount, 1);
+      for (final v in s.signals.where((v) => v.signal.did != candidate.did)) {
+        expect(v.isLive, isFalse, reason: v.signal.name);
+      }
+    });
+
+    test('decimals follow the catalog step', () {
+      expect(vehicleSignalDecimals(byNameCatalog(VehicleSignalNames.vehicleSpeed)), 0);
+      expect(vehicleSignalDecimals(byNameCatalog(VehicleSignalNames.engineSpeed)), 2); // 1/4 rpm
+      expect(vehicleSignalDecimals(byNameCatalog(VehicleSignalNames.batteryVoltage)), 3); // 1/1000 V
+      expect(vehicleSignalDecimals(byNameCatalog(VehicleSignalNames.throttlePos)), 1); // 100/255 %
     });
   });
 

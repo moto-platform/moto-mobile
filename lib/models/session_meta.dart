@@ -61,6 +61,11 @@ class SessionMeta {
   /// D-060), or `null` if this app build predates the GPS block.
   final int? gpsBlockVersion;
 
+  /// Vehicle-signal block format version this app decodes (schema
+  /// `vehicleSignalBlock.version`, D-066 item 4), or `null` if this app build
+  /// predates the vehicle-signal block.
+  final int? vehicleSignalBlockVersion;
+
   /// ATT MTU requested right after connecting (schema `gatt.mtu.requested`),
   /// or `null` if this app build predates MTU negotiation.
   final int? requestedMtu;
@@ -85,6 +90,7 @@ class SessionMeta {
     this.deviceName,
     this.imuBlockVersion = BleImuBlock.version,
     this.gpsBlockVersion = BleGpsBlock.version,
+    this.vehicleSignalBlockVersion = BleVehicleSignalBlock.version,
     this.requestedMtu,
   });
 
@@ -108,6 +114,7 @@ class SessionMeta {
         'device_name': deviceName,
         'imu_block_version': imuBlockVersion,
         'gps_block_version': gpsBlockVersion,
+        'vehicle_signal_block_version': vehicleSignalBlockVersion,
         'requested_mtu': requestedMtu,
       };
 
@@ -131,6 +138,7 @@ class SessionMeta {
         deviceName: json['device_name'] as String?,
         imuBlockVersion: json['imu_block_version'] as int?,
         gpsBlockVersion: json['gps_block_version'] as int?,
+        vehicleSignalBlockVersion: json['vehicle_signal_block_version'] as int?,
         requestedMtu: json['requested_mtu'] as int?,
       );
 
@@ -154,6 +162,7 @@ class SessionMeta {
     String? deviceName,
     int? imuBlockVersion,
     int? gpsBlockVersion,
+    int? vehicleSignalBlockVersion,
     int? requestedMtu,
   }) =>
       SessionMeta(
@@ -176,6 +185,7 @@ class SessionMeta {
         deviceName: deviceName ?? this.deviceName,
         imuBlockVersion: imuBlockVersion ?? this.imuBlockVersion,
         gpsBlockVersion: gpsBlockVersion ?? this.gpsBlockVersion,
+        vehicleSignalBlockVersion: vehicleSignalBlockVersion ?? this.vehicleSignalBlockVersion,
         requestedMtu: requestedMtu ?? this.requestedMtu,
       );
 }

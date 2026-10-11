@@ -12,16 +12,21 @@ Color stateColor(BuildContext context, SignalState state) {
     SignalState.stale => t.stale,
     SignalState.noData => t.noData,
     SignalState.notPolled => t.notPolled,
+    SignalState.skipped => t.noData,
+    SignalState.negativeResponse => t.error,
   };
 }
 
 /// Short upper-case label of a signal state. State is always conveyed by
-/// text and icon as well as colour.
-String stateLabel(SignalState state) => switch (state) {
+/// text and icon as well as colour. A negative response shows its NRC
+/// (`NRC 0x31`) when [nrc] is known.
+String stateLabel(SignalState state, {int? nrc}) => switch (state) {
       SignalState.live => 'LIVE',
       SignalState.stale => 'STALE',
       SignalState.noData => 'NO DATA',
       SignalState.notPolled => 'NOT POLLED',
+      SignalState.skipped => 'SKIPPED',
+      SignalState.negativeResponse => nrc == null ? 'NRC' : 'NRC ${nrcHex(nrc)}',
     };
 
 IconData stateIcon(SignalState state) => switch (state) {
@@ -29,6 +34,8 @@ IconData stateIcon(SignalState state) => switch (state) {
       SignalState.stale => Icons.schedule,
       SignalState.noData => Icons.remove_circle_outline,
       SignalState.notPolled => Icons.do_not_disturb_on_outlined,
+      SignalState.skipped => Icons.block,
+      SignalState.negativeResponse => Icons.error_outline,
     };
 
 /// Upper-case caption above a block of content.
@@ -175,9 +182,12 @@ class InfoBanner extends StatelessWidget {
 
 /// State chip of a signal: dot/icon + text, never colour alone.
 class StateChip extends StatelessWidget {
-  const StateChip(this.state, {super.key});
+  const StateChip(this.state, {super.key, this.nrc});
 
   final SignalState state;
+
+  /// The negative response code shown by [SignalState.negativeResponse].
+  final int? nrc;
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +205,7 @@ class StateChip extends StatelessWidget {
           Icon(stateIcon(state), size: state == SignalState.live ? 10 : 14, color: color),
           const SizedBox(width: Spacing.xs + 2),
           Text(
-            stateLabel(state),
+            stateLabel(state, nrc: nrc),
             style: Theme.of(context).textTheme.labelSmall!.copyWith(color: color, letterSpacing: 0.6),
           ),
         ],

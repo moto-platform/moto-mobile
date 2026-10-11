@@ -58,3 +58,6 @@ String formatAge(int? ms) {
 
 /// `0xF40C`-style hex of a DID.
 String didHex(int did) => '0x${did.toRadixString(16).toUpperCase().padLeft(4, '0')}';
+
+/// `0x31`-style hex of a negative response code.
+String nrcHex(int nrc) => '0x${nrc.toRadixString(16).toUpperCase().padLeft(2, '0')}';
