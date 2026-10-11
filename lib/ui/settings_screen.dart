@@ -1,14 +1,21 @@
 import 'package:flutter/material.dart';
 
 import '../services/app_settings.dart';
+import 'telemetry/link_status.dart';
+import 'theme/app_theme.dart';
+import 'widgets/common.dart';
 
 /// Server-upload settings: base URL, API token, and the Wi-Fi-only upload
 /// policy. Recording and sharing sessions never depend on any of this being
 /// filled in -- only the "Upload" action in the sessions list does.
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, this.store = const AppSettingsStore()});
+  const SettingsScreen({super.key, this.store = const AppSettingsStore(), this.onSaved});
 
   final AppSettingsStore store;
+
+  /// Called after the settings were saved (the shell uses it to refresh
+  /// screens that depend on them, e.g. the upload action in Record).
+  final VoidCallback? onSaved;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -44,6 +51,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       apiToken: _apiTokenCtrl.text.trim().isEmpty ? null : _apiTokenCtrl.text.trim(),
       uploadOnlyOnWifi: _uploadOnlyOnWifi,
     ));
+    widget.onSaved?.call();
     if (!mounted) return;
     setState(() => _saved = true);
     ScaffoldMessenger.of(context).showSnackBar(
@@ -60,69 +68,78 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final t = context.moto;
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(Spacing.lg, Spacing.sm, Spacing.lg, Spacing.xl),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text('MOTO-SERVER UPLOAD', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _baseUrlCtrl,
-                    keyboardType: TextInputType.url,
-                    decoration: const InputDecoration(
-                      labelText: 'Server base URL',
-                      hintText: 'https://moto-server.example.com',
+                  const SectionLabel('moto-server upload'),
+                  SectionCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        TextField(
+                          controller: _baseUrlCtrl,
+                          keyboardType: TextInputType.url,
+                          decoration: const InputDecoration(
+                            labelText: 'Server base URL',
+                            hintText: 'https://moto-server.example.com',
+                          ),
+                          onChanged: (_) => setState(() => _saved = false),
+                        ),
+                        const SizedBox(height: Spacing.md),
+                        TextField(
+                          controller: _apiTokenCtrl,
+                          obscureText: true,
+                          decoration: const InputDecoration(labelText: 'API token'),
+                          onChanged: (_) => setState(() => _saved = false),
+                        ),
+                        const SizedBox(height: Spacing.sm),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text('Upload only on Wi-Fi', style: theme.textTheme.titleSmall),
+                          subtitle: Text(
+                            'Session archives can be several MB; avoid mobile data by default.',
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          value: _uploadOnlyOnWifi,
+                          onChanged: (v) => setState(() {
+                            _uploadOnlyOnWifi = v;
+                            _saved = false;
+                          }),
+                        ),
+                      ],
                     ),
-                    onChanged: (_) => setState(() => _saved = false),
                   ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _apiTokenCtrl,
-                    obscureText: true,
-                    decoration: const InputDecoration(labelText: 'API token'),
-                    onChanged: (_) => setState(() => _saved = false),
-                  ),
-                  const SizedBox(height: 8),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Upload only on Wi-Fi'),
-                    subtitle: const Text('Session archives can be several MB; avoid mobile data by default.'),
-                    value: _uploadOnlyOnWifi,
-                    onChanged: (v) => setState(() {
-                      _uploadOnlyOnWifi = v;
-                      _saved = false;
-                    }),
-                  ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: Spacing.lg),
                   if (isCleartextRemoteUrl(_baseUrlCtrl.text))
                     const Padding(
-                      padding: EdgeInsets.only(bottom: 12),
-                      child: Text(
-                        'Warning: http:// sends the API token and ride data unencrypted. Use it only '
-                        'on a trusted local network; use https:// for any server reachable from outside.',
-                        style: TextStyle(fontSize: 12, color: Colors.orange),
+                      padding: EdgeInsets.only(bottom: Spacing.md),
+                      child: InfoBanner(
+                        icon: Icons.warning_amber_rounded,
+                        tone: Tone.warn,
+                        text: 'Warning: http:// sends the API token and ride data unencrypted. Use it only '
+                            'on a trusted local network; use https:// for any server reachable from outside.',
                       ),
                     ),
                   if (_baseUrlCtrl.text.trim().isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.only(bottom: 12),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: Spacing.md),
                       child: Text(
                         'No server configured yet: recording and sharing sessions work fully without '
                         'this. Set a URL here to enable the Upload action in the sessions list.',
-                        style: TextStyle(fontSize: 12, color: Colors.grey),
+                        style: theme.textTheme.bodySmall!.copyWith(color: t.textSecondary),
                       ),
                     ),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _save,
-                      child: Text(_saved ? 'Saved' : 'Save'),
-                    ),
+                  ElevatedButton(
+                    onPressed: _save,
+                    child: Text(_saved ? 'Saved' : 'Save'),
                   ),
                 ],
               ),

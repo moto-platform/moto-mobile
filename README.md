@@ -18,6 +18,29 @@ carried over and updated for the BLE telemetry packet schema (now version 4,
 D-058, with version 3 still decoded and version 2 kept as the low-MTU
 fallback).
 
+## App screens
+
+Dark, high-contrast Material 3 theme; every color and text style lives in
+`lib/ui/theme/app_theme.dart`. Five destinations (`lib/ui/app_shell.dart`):
+
+- **Live:** speed, RPM, throttle, coolant and battery with their state, and a
+  status strip (BLE, ECU, CAN state, latches, mock data, IMU, GPS).
+- **Signals:** every signal of the defs catalog (D-066,
+  `vehicleSignalCatalog`), grouped, with a LIVE / STALE / NO DATA / NOT POLLED
+  chip, age and poll period. Candidates stay NOT POLLED until a `/signal-change`
+  in moto-vehicle-defs promotes them after the D-059 scan; this screen is how
+  the bike shows which signals flow.
+- **Record:** session metadata, live counters, sessions and upload (unchanged
+  behaviour, D-063 still applies).
+- **Diagnostics:** link, packet loss, vehicle CAN counters and the D-058 tester
+  statistics.
+- **Settings:** server URL and API token.
+
+`lib/ui/telemetry/signal_view.dart` maps the polled catalog signals to the
+decoded telemetry fields, keyed by the generated `VehicleSignalNames`; a test
+fails if a polled DID has no binding. The Nextion telematics form of the legacy
+dashboard is gone (the display is deferred in Phase 0).
+
 ## BLE telemetry packet schema
 
 The BLE notification formats decoded by `lib/models/telemetry_data.dart`
