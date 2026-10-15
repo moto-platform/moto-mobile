@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -120,6 +121,33 @@ void main() {
           await uploader.upload('20260927-120000-ab12', const AppSettings(serverBaseUrl: 'https://s', apiToken: 't'));
       expect(status.state, SessionUploadState.failed);
       expect(status.reason, contains('content differs'));
+    });
+
+    test('an "uploading" state left on disk by a killed app reads as failed, so a retry is offered', () async {
+      await File('${sessionDir.path}/upload.json').writeAsString('{"state":"uploading"}');
+      final uploader = SessionUploader(documentsDirProvider: () async => tempDir);
+      final status = await uploader.readStatus('20260927-120000-ab12');
+      expect(status.state, SessionUploadState.failed);
+      expect(status.reason, contains('interrupted'));
+    });
+
+    test('readStatus keeps "uploading" while the upload is still running in this process', () async {
+      final answer = Completer<http.Response>();
+      final uploader = SessionUploader(
+        documentsDirProvider: () async => tempDir,
+        uploadClient: UploadClient(httpClient: MockClient((_) => answer.future)),
+        networkInfo: _FixedNetworkInfo(true),
+      );
+
+      final pending =
+          uploader.upload('20260927-120000-ab12', const AppSettings(serverBaseUrl: 'https://s', apiToken: 't'));
+      while ((await uploader.readStatus('20260927-120000-ab12')).state != SessionUploadState.uploading) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+
+      answer.complete(http.Response('', 201));
+      expect((await pending).state, SessionUploadState.uploaded);
+      expect((await uploader.readStatus('20260927-120000-ab12')).state, SessionUploadState.uploaded);
     });
 
     test('no server configured fails without making a network call', () async {

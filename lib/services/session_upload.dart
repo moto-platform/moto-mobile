@@ -92,6 +92,10 @@ class SessionUploader {
   final UploadClient _uploadClient;
   final NetworkInfo _networkInfo;
 
+  /// Sessions with an upload running in this process. Static so a recreated
+  /// screen (new uploader) still sees an upload its predecessor started.
+  static final Set<String> _inFlight = <String>{};
+
   Future<Directory> _sessionDir(String sessionId) async {
     final root = await resolveSessionsRootDir(_documentsDirProvider);
     return Directory('${root.path}/$sessionId');
@@ -101,12 +105,23 @@ class SessionUploader {
     final dir = await _sessionDir(sessionId);
     final file = File('${dir.path}/upload.json');
     if (!await file.exists()) return const SessionUploadStatus();
+    final SessionUploadStatus status;
     try {
       final json = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-      return SessionUploadStatus.fromJson(json);
+      status = SessionUploadStatus.fromJson(json);
     } catch (_) {
       return const SessionUploadStatus();
     }
+    // "uploading" on disk with no upload running in this process means the
+    // app died mid-upload. Report it as failed so the UI offers a retry
+    // instead of a spinner that never ends.
+    if (status.state == SessionUploadState.uploading && !_inFlight.contains(sessionId)) {
+      return const SessionUploadStatus(
+        state: SessionUploadState.failed,
+        reason: 'interrupted (the app was closed during the upload)',
+      );
+    }
+    return status;
   }
 
   Future<void> _writeStatus(String sessionId, SessionUploadStatus status) async {
@@ -155,16 +170,22 @@ class SessionUploader {
       }
     }
 
-    await _writeStatus(sessionId, const SessionUploadStatus(state: SessionUploadState.uploading));
+    final UploadResult result;
+    _inFlight.add(sessionId);
+    try {
+      await _writeStatus(sessionId, const SessionUploadStatus(state: SessionUploadState.uploading));
 
-    final archiveBytes = await buildSessionArchiveBytes(dir);
+      final archiveBytes = await buildSessionArchiveBytes(dir);
 
-    final result = await _uploadClient.uploadSession(
-      baseUrl: settings.serverBaseUrl!,
-      apiToken: settings.apiToken ?? '',
-      sessionId: sessionId,
-      archiveBytes: archiveBytes,
-    );
+      result = await _uploadClient.uploadSession(
+        baseUrl: settings.serverBaseUrl!,
+        apiToken: settings.apiToken ?? '',
+        sessionId: sessionId,
+        archiveBytes: archiveBytes,
+      );
+    } finally {
+      _inFlight.remove(sessionId);
+    }
 
     final status = result.isSuccess
         ? SessionUploadStatus(

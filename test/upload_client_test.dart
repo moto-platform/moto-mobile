@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -113,6 +114,22 @@ void main() {
       );
       expect(result.outcome, UploadOutcome.failed);
       expect(result.message, contains('boom'));
+    });
+
+    test('a server that never answers times out as a failure instead of hanging', () async {
+      final neverAnswers = Completer<http.Response>();
+      final client = UploadClient(
+        httpClient: MockClient((_) => neverAnswers.future),
+        totalTimeout: const Duration(milliseconds: 50),
+      );
+      final result = await client.uploadSession(
+        baseUrl: 'http://192.168.43.193:8000',
+        apiToken: 't',
+        sessionId: 'id',
+        archiveBytes: [1],
+      );
+      expect(result.outcome, UploadOutcome.failed);
+      expect(result.message, contains('timed out'));
     });
   });
 }
