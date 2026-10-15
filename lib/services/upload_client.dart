@@ -1,7 +1,19 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
+
+/// TCP connect limit of the default client. A server that is unreachable from
+/// this network (wrong IP after a DHCP change, client isolation on a school or
+/// guest Wi-Fi) drops the SYN silently; without this limit the OS retries for
+/// minutes and the session stays in "uploading".
+const Duration uploadConnectTimeout = Duration(seconds: 10);
+
+/// Upper bound for one whole upload (connect, body, response). Generous so a
+/// large session on a slow link still completes.
+const Duration uploadTotalTimeout = Duration(minutes: 5);
 
 /// Outcome of one upload attempt against moto-server's ingestion API
 /// (`POST {baseUrl}/sessions`).
@@ -41,9 +53,12 @@ class UploadResult {
 /// this is unit-testable with `package:http/testing.dart`'s `MockClient`
 /// instead of a real network call.
 class UploadClient {
-  UploadClient({http.Client? httpClient}) : _httpClient = httpClient ?? http.Client();
+  UploadClient({http.Client? httpClient, Duration totalTimeout = uploadTotalTimeout})
+      : _httpClient = httpClient ?? IOClient(HttpClient()..connectionTimeout = uploadConnectTimeout),
+        _totalTimeout = totalTimeout;
 
   final http.Client _httpClient;
+  final Duration _totalTimeout;
 
   Future<UploadResult> uploadSession({
     required String baseUrl,
@@ -61,8 +76,10 @@ class UploadClient {
     ));
 
     try {
-      final streamedResponse = await _httpClient.send(request);
-      final response = await http.Response.fromStream(streamedResponse);
+      final response = await _httpClient
+          .send(request)
+          .then(http.Response.fromStream)
+          .timeout(_totalTimeout);
 
       switch (response.statusCode) {
         case 201:
@@ -88,6 +105,11 @@ class UploadClient {
             message: _extractMessage(response) ?? 'HTTP ${response.statusCode}',
           );
       }
+    } on TimeoutException {
+      return UploadResult(
+        UploadOutcome.failed,
+        message: 'timed out after ${_totalTimeout.inSeconds} s (is the server reachable from this network?)',
+      );
     } on SocketException catch (e) {
       return UploadResult(UploadOutcome.failed, message: 'network error: ${e.message}');
     } catch (e) {
