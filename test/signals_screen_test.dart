@@ -49,7 +49,12 @@ VehicleSignalRecord record(VehicleSignal s, int state, {int raw = 0, int ageMs =
     VehicleSignalRecord(did: s.did, state: state, ageMs: ageMs, raw: raw);
 
 void main() {
-  final candidates = vehicleSignalCatalog.where((s) => !s.isPolled).toList();
+  // Since defs v0.12.0 (D-068) the catalog has no candidates: every signal is
+  // polled. [recordOnly] are those the v4 packet does not carry, so they get a
+  // value only from a vehicle-signal record.
+  final recordOnly =
+      vehicleSignalCatalog.where((s) => s.isPolled && !boundSignalNames.contains(s.name)).toList();
+  final total = vehicleSignalCatalog.length;
 
   Finder chipsOf(SignalState state) => find.byWidgetPredicate((w) => w is StateChip && w.state == state);
 
@@ -61,21 +66,22 @@ void main() {
     await tester.pumpWidget(host(SignalsScreen(store: store)));
   }
 
-  testWidgets('without vehicle-signal records every candidate shows NOT POLLED', (tester) async {
+  testWidgets('without vehicle-signal records every polled signal shows NO DATA', (tester) async {
     final store = TelemetryStore();
     addTearDown(store.dispose);
     store.updateConnection(true);
     await pumpScreen(tester, store);
 
-    expect(chipsOf(SignalState.notPolled), findsNWidgets(candidates.length));
-    expect(find.descendant(of: find.byType(StateChip), matching: find.text('NOT POLLED')), findsNWidgets(candidates.length));
-    expect(find.text('Not polled'), findsNWidgets(candidates.length));
+    expect(chipsOf(SignalState.noData), findsNWidgets(total));
+    expect(chipsOf(SignalState.notPolled), findsNothing);
+    expect(find.text('NOT POLLED'), findsNothing);
+    expect(find.text('Not polled'), findsNothing);
     expect(chipsOf(SignalState.live), findsNothing);
   });
 
-  testWidgets('a candidate that arrives with state valid shows LIVE with its value and catalog unit',
+  testWidgets('a record-only signal that arrives with state valid shows LIVE with its value and catalog unit',
       (tester) async {
-    final candidate = candidates.first;
+    final candidate = recordOnly.first;
     final raw = candidate.length == 1 ? 100 : 1000;
     final expected = candidate.physical(raw).toStringAsFixed(vehicleSignalDecimals(candidate));
 
@@ -89,8 +95,8 @@ void main() {
     expect(find.descendant(of: find.byType(StateChip), matching: find.text('LIVE')), findsOneWidget);
     expect(find.text(expected), findsOneWidget);
     expect(find.text(displayUnit(candidate.unit)), findsWidgets);
-    expect(chipsOf(SignalState.notPolled), findsNWidgets(candidates.length - 1));
-    expect(find.textContaining('Reported by the node'), findsOneWidget);
+    expect(chipsOf(SignalState.noData), findsNWidgets(total - 1));
+    expect(find.textContaining('Poll every ${candidate.pollPeriodMs} ms'), findsWidgets);
   });
 
   testWidgets('a valid record older than 2000 ms, and a stale record, show STALE', (tester) async {
@@ -99,15 +105,15 @@ void main() {
     addTearDown(store.dispose);
     store.updateConnection(true);
     store.updateVehicleSignalBlock(blockOf([
-      record(candidates[0], BleVehicleSignalState.valid, raw: 1),
-      record(candidates[1], BleVehicleSignalState.stale, raw: 1, ageMs: 7000),
+      record(recordOnly[0], BleVehicleSignalState.valid, raw: 1),
+      record(recordOnly[1], BleVehicleSignalState.stale, raw: 1, ageMs: 7000),
     ]));
     now = now.add(vehicleSignalLiveWithin + const Duration(milliseconds: 1));
-    store.updateVehicleSignalBlock(blockOf([record(candidates[2], BleVehicleSignalState.valid, raw: 1)]));
+    store.updateVehicleSignalBlock(blockOf([record(recordOnly[2], BleVehicleSignalState.valid, raw: 1)]));
     await pumpScreen(tester, store);
 
-    // candidates[0]: valid but received 2001 ms ago; candidates[1]: state stale;
-    // candidates[2]: valid and just received.
+    // recordOnly[0]: valid but received 2001 ms ago; recordOnly[1]: state stale;
+    // recordOnly[2]: valid and just received.
     expect(chipsOf(SignalState.stale), findsNWidgets(2));
     expect(find.descendant(of: find.byType(StateChip), matching: find.text('STALE')), findsNWidgets(2));
     expect(chipsOf(SignalState.live), findsOneWidget);
@@ -118,9 +124,9 @@ void main() {
     addTearDown(store.dispose);
     store.updateConnection(true);
     store.updateVehicleSignalBlock(blockOf([
-      record(candidates[0], BleVehicleSignalState.negativeResponse,
+      record(recordOnly[0], BleVehicleSignalState.negativeResponse,
           raw: 0x31, ageMs: BleTelemetry.ageNeverReceived),
-      record(candidates[1], BleVehicleSignalState.skipped),
+      record(recordOnly[1], BleVehicleSignalState.skipped),
     ]));
     await pumpScreen(tester, store);
 
@@ -128,19 +134,19 @@ void main() {
     expect(chipsOf(SignalState.negativeResponse), findsOneWidget);
     expect(find.text('SKIPPED'), findsOneWidget);
     expect(chipsOf(SignalState.live), findsNothing);
-    expect(chipsOf(SignalState.notPolled), findsNWidgets(candidates.length - 2));
+    expect(chipsOf(SignalState.noData), findsNWidgets(total - 2));
   });
 
-  testWidgets('a v4 telemetry packet keeps the five polled signals LIVE alongside vehicle-signal records',
+  testWidgets('a v4 telemetry packet keeps the packet-bound signals LIVE alongside vehicle-signal records',
       (tester) async {
     final store = TelemetryStore();
     addTearDown(store.dispose);
     store.updateConnection(true);
     store.updateTelemetry(livePacket());
-    store.updateVehicleSignalBlock(blockOf([record(candidates.first, BleVehicleSignalState.valid, raw: 1)]));
+    store.updateVehicleSignalBlock(blockOf([record(recordOnly.first, BleVehicleSignalState.valid, raw: 1)]));
     await pumpScreen(tester, store);
 
-    expect(chipsOf(SignalState.live), findsNWidgets(5)); // four live v4 signals + the candidate
+    expect(chipsOf(SignalState.live), findsNWidgets(5)); // four live v4 signals + the record-only signal
     expect(find.text('62'), findsOneWidget);
   });
 
@@ -148,7 +154,7 @@ void main() {
     final store = TelemetryStore();
     addTearDown(store.dispose);
     store.updateConnection(true);
-    store.updateVehicleSignalBlock(blockOf([record(candidates.first, BleVehicleSignalState.valid, raw: 1)]));
+    store.updateVehicleSignalBlock(blockOf([record(recordOnly.first, BleVehicleSignalState.valid, raw: 1)]));
     expect(store.vehicleSignals, isNotEmpty);
     store.updateConnection(false);
     expect(store.vehicleSignals, isEmpty);
@@ -191,7 +197,7 @@ void main() {
     await tester.pumpWidget(host(SignalsScreen(store: store)));
 
     final polled = vehicleSignalCatalog.where((s) => s.isPolled).length;
-    final candidates = vehicleSignalCatalog.length - polled;
+    final candidates = vehicleSignalCatalog.length - polled; // 0 since D-068
     expect(find.text('4'), findsWidgets); // four live (battery is stale)
     expect(find.text('$polled'), findsWidgets);
     expect(find.text('$candidates'), findsWidgets);
@@ -200,10 +206,11 @@ void main() {
     expect(chips(SignalState.live), findsNWidgets(4));
     expect(chips(SignalState.stale), findsOneWidget);
     expect(chips(SignalState.notPolled), findsNWidgets(candidates));
+    expect(chips(SignalState.noData), findsNWidgets(polled - 5));
     expect(find.text('62'), findsOneWidget);
   });
 
-  testWidgets('filter shows only candidates', (tester) async {
+  testWidgets('filter shows only candidates (none in the current catalog)', (tester) async {
     tester.view.physicalSize = const Size(800, 12000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
