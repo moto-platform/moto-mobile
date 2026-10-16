@@ -76,7 +76,11 @@ SignalSnapshot snapshotWith(
       now: t0,
     );
 
-VehicleSignal firstCandidate() => vehicleSignalCatalog.firstWhere((s) => !s.isPolled);
+/// A polled catalog signal the v4 packet does not carry: it can only get a
+/// value from a vehicle-signal record. (Since defs v0.12.0 / D-068 the catalog
+/// has no candidates left, so this is the record-only case.)
+VehicleSignal firstRecordOnly() =>
+    vehicleSignalCatalog.firstWhere((s) => s.isPolled && !boundSignalNames.contains(s.name));
 
 VehicleSignal byNameCatalog(String name) => vehicleSignalCatalog.firstWhere((s) => s.name == name);
 
@@ -93,9 +97,10 @@ void main() {
       expect(labels.toSet().length, labels.length);
     });
 
-    test('every polled catalog signal has a packet binding', () {
+    test('every packet binding is a polled catalog signal', () {
       final polled = vehicleSignalCatalog.where((e) => e.isPolled).map((e) => e.name).toSet();
-      expect(boundSignalNames, polled);
+      expect(boundSignalNames, isNotEmpty);
+      expect(polled.containsAll(boundSignalNames), isTrue);
     });
 
     test('groups follow vehicleSignalGroups order and contain every signal', () {
@@ -112,7 +117,7 @@ void main() {
       expect(s.polledCount, vehicleSignalCatalog.where((e) => e.isPolled).length);
       expect(s.candidateCount, vehicleSignalCatalog.where((e) => !e.isPolled).length);
       expect(s.polledCount + s.candidateCount, vehicleSignalCatalog.length);
-      expect(s.liveCount, s.polledCount);
+      expect(s.liveCount, boundSignalNames.length); // only the packet-bound signals are live
     });
   });
 
@@ -172,16 +177,16 @@ void main() {
         connected: true,
         sinceLastPacket: linkStaleAfter + const Duration(milliseconds: 1),
       );
-      for (final v in s.signals.where((v) => v.signal.isPolled)) {
+      for (final v in s.signals.where((v) => boundSignalNames.contains(v.signal.name))) {
         expect(v.state, SignalState.stale, reason: v.signal.name);
         expect(v.valueText, noValueText);
       }
       // A fresh packet keeps them live.
       final fresh = SignalSnapshot.from(packet(), connected: true, sinceLastPacket: const Duration(milliseconds: 150));
-      expect(fresh.liveCount, fresh.polledCount);
+      expect(fresh.liveCount, boundSignalNames.length);
     });
 
-    test('candidates are never live and never carry a value, in any packet state', () {
+    test('record-only signals are never live and never carry a value without a record, in any packet state', () {
       final cases = <SignalSnapshot>[
         SignalSnapshot.from(packet(), connected: true),
         SignalSnapshot.from(packet(), connected: false),
@@ -190,10 +195,11 @@ void main() {
         SignalSnapshot.empty(),
       ];
       for (final s in cases) {
-        final candidates = s.signals.where((v) => !v.signal.isPolled);
-        expect(candidates, isNotEmpty);
-        for (final v in candidates) {
-          expect(v.state, SignalState.notPolled, reason: v.signal.name);
+        final recordOnly = s.signals.where((v) => !boundSignalNames.contains(v.signal.name));
+        expect(recordOnly, isNotEmpty);
+        for (final v in recordOnly) {
+          // Polled by the node but nothing received yet: NO DATA, not NOT POLLED.
+          expect(v.state, SignalState.noData, reason: v.signal.name);
           expect(v.isLive, isFalse);
           expect(v.value, isNull);
           expect(v.valueText, noValueText);
@@ -204,9 +210,9 @@ void main() {
   });
 
   group('vehicle-signal records', () {
-    final candidate = firstCandidate();
+    final candidate = firstRecordOnly();
 
-    test('a candidate that arrives valid and fresh is LIVE with its decoded value', () {
+    test('a record-only signal that arrives valid and fresh is LIVE with its decoded value', () {
       final raw = candidate.length == 1 ? 100 : 1000;
       final v = view(
         snapshotWith([received(candidate.did, BleVehicleSignalState.valid, raw: raw, wireAge: 150)]),
@@ -268,11 +274,11 @@ void main() {
       expect(v.valueText, noValueText);
     });
 
-    test('state neverReceived: a candidate is NO DATA, a polled signal keeps its packet view', () {
+    test('state neverReceived is NO DATA for a record-only signal; a packet-bound signal keeps its packet view', () {
       final c = view(snapshotWith([received(candidate.did, BleVehicleSignalState.neverReceived)]), candidate.name);
       expect(c.state, SignalState.noData);
 
-      final polled = vehicleSignalCatalog.firstWhere((s) => s.isPolled);
+      final polled = byNameCatalog(VehicleSignalNames.vehicleSpeed);
       final p = view(
         snapshotWith([received(polled.did, BleVehicleSignalState.neverReceived)], data: packet()),
         polled.name,
@@ -289,9 +295,10 @@ void main() {
       expect(v.value, isNull);
     });
 
-    test('without a record a candidate stays NOT POLLED', () {
+    test('without a record a polled record-only signal is NO DATA', () {
       final v = view(snapshotWith(const []), candidate.name);
-      expect(v.state, SignalState.notPolled);
+      expect(v.state, SignalState.noData);
+      expect(v.value, isNull);
     });
 
     test('records are ignored while not connected', () {
@@ -299,7 +306,7 @@ void main() {
         snapshotWith([received(candidate.did, BleVehicleSignalState.valid, raw: 1)], connected: false),
         candidate.name,
       );
-      expect(v.state, SignalState.notPolled);
+      expect(v.state, SignalState.noData);
     });
 
     test('a polled signal with no telemetry packet at all is LIVE from its record', () {

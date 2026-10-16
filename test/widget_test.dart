@@ -29,7 +29,7 @@ void main() {
 
     await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('Signals')));
     await tester.pump();
-    expect(find.text('NOT POLLED'), findsWidgets);
+    expect(find.text('NO DATA'), findsWidgets);
 
     await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('Diagnostics')));
     await tester.pump();
