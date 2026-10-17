@@ -1,7 +1,7 @@
 name: moto_mobile
 description: "moto-platform phone companion app (BLE telemetry client, ride history, settings)."
 publish_to: 'none'
-version: 0.3.0+4 # semver (D-036); +N = Android versionCode, bump on every release
+version: 0.4.0+5 # semver (D-036); +N = Android versionCode, bump on every release
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
