@@ -174,6 +174,9 @@ const int _allFlagsButImu = BleTelemetryFlagBits.rpmValid |
 
 const int _allFlags = _allFlagsButImu | BleTelemetryFlagBits.imuActive;
 
+/// The rotating RTT DID of the fixtures, taken from the generated catalog.
+final int _rttDid = vehicleSignalCatalog.firstWhere((s) => s.name == VehicleSignalNames.engineSpeed).did;
+
 void main() {
   setUp(() {
     TelemetryData.resetStats();
@@ -287,7 +290,7 @@ void main() {
         canFlags: BleCanFlagsBits.pollerEnabled,
         stepGapMaxMs: 321,
         stepGapOverCount: 12,
-        rttDid: 0xF40C,
+        rttDid: _rttDid,
         rttMinMs: 25,
         rttMaxMs: 480,
         rttSumMs: 4000000000, // above int32: checks the uint32 read
@@ -334,7 +337,7 @@ void main() {
 
       expect(data.stepGapMaxMs, 321);
       expect(data.stepGapOverCount, 12);
-      expect(data.rttDid, 0xF40C);
+      expect(data.rttDid, _rttDid);
       expect(data.rttMinMs, 25);
       expect(data.rttMaxMs, 480);
       expect(data.rttSumMs, 4000000000);
