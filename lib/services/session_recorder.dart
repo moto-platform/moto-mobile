@@ -368,6 +368,7 @@ class SessionRecorder extends ChangeNotifier {
   int _vehicleSignalBlockCount = 0;
   int _vehicleSignalRecordCount = 0;
   int _vehicleSignalLostBlocks = 0;
+  final Map<int, VehicleSignalRecord> _latestVehicleSignals = {};
 
   int get packetCount => _packetCount;
   int get lostCount => _lostCount;
@@ -385,6 +386,10 @@ class SessionRecorder extends ChangeNotifier {
   int get vehicleSignalBlockCount => _vehicleSignalBlockCount;
   int get vehicleSignalRecordCount => _vehicleSignalRecordCount;
   int get vehicleSignalLostBlocks => _vehicleSignalLostBlocks;
+
+  /// The latest record of every DID seen in this session's vehicle-signal
+  /// blocks, keyed by DID (display only).
+  Map<int, VehicleSignalRecord> get latestVehicleSignals => Map.unmodifiable(_latestVehicleSignals);
 
   /// The most recent GPS block of this session, for the live display.
   GpsBlock? get lastGpsBlock => _lastGpsBlock;
@@ -476,6 +481,7 @@ class SessionRecorder extends ChangeNotifier {
     _vehicleSignalBlockCount = 0;
     _vehicleSignalRecordCount = 0;
     _vehicleSignalLostBlocks = 0;
+    _latestVehicleSignals.clear();
     _signalsFileCreated = false;
     _signalsSink = null;
 
@@ -808,6 +814,9 @@ class SessionRecorder extends ChangeNotifier {
     _vehicleSignalBlockCount++;
     _vehicleSignalRecordCount += block.records.length;
     _vehicleSignalLostBlocks += missing;
+    for (final record in block.records) {
+      _latestVehicleSignals[record.did] = record;
+    }
 
     _ensureSignalsSinkOpen();
     for (var i = 0; i < block.records.length; i++) {

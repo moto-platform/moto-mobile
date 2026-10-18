@@ -10,6 +10,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/gps_block.dart';
 import '../models/session_meta.dart';
+import '../models/vehicle_signal_block.dart';
 import '../services/app_settings.dart';
 import '../services/ble_service.dart';
 import '../services/session_recorder.dart';
@@ -577,6 +578,12 @@ class _RecordScreenState extends State<RecordScreen> {
           ),
           const SizedBox(height: Spacing.md),
           _buildGpsLine(),
+          const SizedBox(height: Spacing.xs),
+          VehicleSignalStatusLine(
+            latest: _recorder.latestVehicleSignals,
+            blockCount: _recorder.vehicleSignalBlockCount,
+            lostBlocks: _recorder.vehicleSignalLostBlocks,
+          ),
           if (_recorder.firmwareUpdateRecommended)
             const Padding(
               padding: EdgeInsets.only(top: Spacing.md),
@@ -733,6 +740,56 @@ class _RecordScreenState extends State<RecordScreen> {
         },
       ),
     );
+  }
+}
+
+/// Display only: the state of the vehicle-signal block (D-066 item 4) while
+/// recording -- how many of the DIDs seen are valid, stale, skipped, answered
+/// with a negative response or never received, plus the lost blocks. The
+/// states come from the generated [BleVehicleSignalState]; nothing is
+/// interpreted here.
+class VehicleSignalStatusLine extends StatelessWidget {
+  const VehicleSignalStatusLine({
+    super.key,
+    required this.latest,
+    required this.blockCount,
+    required this.lostBlocks,
+  });
+
+  /// Latest record per DID.
+  final Map<int, VehicleSignalRecord> latest;
+  final int blockCount;
+  final int lostBlocks;
+
+  /// "Vehicle signals: ..." text of the current state.
+  String get label {
+    if (blockCount == 0) return 'Vehicle signals: waiting for data (or not offered by the firmware)';
+    int count(int state) => latest.values.where((r) => r.state == state).length;
+    final known = [
+      (count(BleVehicleSignalState.valid), 'valid'),
+      (count(BleVehicleSignalState.stale), 'stale'),
+      (count(BleVehicleSignalState.skipped), 'skipped'),
+      (count(BleVehicleSignalState.negativeResponse), 'NRC'),
+      (count(BleVehicleSignalState.neverReceived), 'never'),
+    ];
+    final other = latest.values
+        .where((r) => r.state < BleVehicleSignalState.neverReceived || r.state > BleVehicleSignalState.negativeResponse)
+        .length;
+    final parts = [
+      for (final (n, name) in known)
+        if (n > 0) '$n $name',
+      if (other > 0) '$other unknown state',
+    ];
+    return 'Vehicle signals (${latest.length} DIDs): ${parts.join(', ')}   Lost blocks: $lostBlocks';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.moto;
+    final style = Theme.of(context).textTheme.bodyMedium!;
+    final problem = lostBlocks > 0 ||
+        latest.values.any((r) => r.isNegativeResponse || r.isSkipped || r.isStale || r.isNeverReceived);
+    return Text(label, style: blockCount > 0 && problem ? style.copyWith(color: t.warning) : style);
   }
 }
 

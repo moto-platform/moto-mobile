@@ -30,6 +30,9 @@ SessionMeta _testMeta() => const SessionMeta(
       requestedMtu: 185,
     );
 
+/// The rotating RTT DID of the fixtures, taken from the generated catalog.
+final int _rttDid = vehicleSignalCatalog.firstWhere((s) => s.name == VehicleSignalNames.engineSpeed).did;
+
 void main() {
   late Directory tempDir;
   late SessionRecorder recorder;
@@ -124,7 +127,7 @@ void main() {
         canFlags: BleCanFlagsBits.pollerEnabled,
         stepGapMaxMs: 250,
         stepGapOverCount: 4,
-        rttDid: 0xF40C,
+        rttDid: _rttDid,
         rttMinMs: 20,
         rttMaxMs: 300,
         rttSumMs: 4000000000,
@@ -150,7 +153,7 @@ void main() {
       expect(byName['can_flags'], '1');
       expect(byName['step_gap_max_ms'], '250');
       expect(byName['step_gap_over_count'], '4');
-      expect(byName['rtt_did'], '${0xF40C}');
+      expect(byName['rtt_did'], '$_rttDid');
       expect(byName['rtt_min_ms'], '20');
       expect(byName['rtt_max_ms'], '300');
       expect(byName['rtt_sum_ms'], '4000000000');

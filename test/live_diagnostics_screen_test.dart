@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:moto_defs/moto_defs.dart';
 import 'package:moto_mobile/models/telemetry_data.dart';
+import 'package:moto_mobile/models/vehicle_signal_block.dart' show vehicleSignalByDid;
 import 'package:moto_mobile/services/ble_service.dart';
 import 'package:moto_mobile/ui/diagnostics_screen.dart';
 import 'package:moto_mobile/ui/live_screen.dart';
+import 'package:moto_mobile/ui/telemetry/link_status.dart' show didHex;
 import 'package:moto_mobile/ui/telemetry/telemetry_store.dart';
 import 'package:moto_mobile/ui/theme/app_theme.dart';
+
+/// The rotating RTT DID of the fixtures, taken from the generated catalog.
+final int _rttDid = vehicleSignalCatalog.firstWhere((s) => s.name == VehicleSignalNames.engineSpeed).did;
 
 TelemetryData packet({int canFlags = 0x01}) => TelemetryData(
       packetVersion: TelemetryVersion.v4,
@@ -39,7 +45,7 @@ TelemetryData packet({int canFlags = 0x01}) => TelemetryData(
       canFlags: canFlags,
       stepGapMaxMs: 48,
       stepGapOverCount: 3,
-      rttDid: 0xF40C,
+      rttDid: _rttDid,
       rttMinMs: 6,
       rttMaxMs: 21,
       rttSumMs: 400,
@@ -133,7 +139,7 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('247'), findsOneWidget);
     expect(find.text('48 ms'), findsOneWidget); // step gap max
-    expect(find.text('Engine speed (0xF40C)'), findsOneWidget); // rotating RTT DID from the catalog
+    expect(find.text('${vehicleSignalByDid(_rttDid)!.label} (${didHex(_rttDid)})'), findsOneWidget); // rotating RTT DID from the catalog
     expect(find.text('10.0 ms'), findsOneWidget); // 400 / 40
   });
 
